@@ -152,15 +152,16 @@ function FileView({ id, conv, token, name, mime, size, big, out, onBig, onShut }
       </div>
     );
   }
-  if (!big) return <img src={url} onClick={onBig} className="iTt5T" alt={name} />;
+  if (!big) return <button type="button" className="iTt5T" onClick={onBig}><img src={url} alt={name} /></button>;
   return (
-    <div className={out ? "vX3oL qZ4oU" : "vX3oL"} onClick={onShut}>
-      <div className="bA7rB" onClick={(e) => e.stopPropagation()}>
+    <div className={out ? "vX3oL qZ4oU" : "vX3oL"}>
+      <button type="button" className="vX3oB" aria-label="close image" onClick={onShut} />
+      <div className="bA7rB">
         <a href={url} download={name} className="ZwE4b td7Kx qWz9k"><Download size={18} /></a>
         <button className="ZwE4b td7Kx qWz9k" onClick={copy}>{ok ? <Check size={18} /> : <Copy size={18} />}</button>
         <button className="ZwE4b td7Kx qWz9k" onClick={onShut}><CloseIcon size={18} /></button>
       </div>
-      <img src={url} className="oI9mG" alt={name} onClick={(e) => e.stopPropagation()} />
+      <img src={url} className="oI9mG" alt={name} />
     </div>
   );
 }
@@ -1332,9 +1333,9 @@ async function refreshPresence(s: Sess) {
           <span>{(sess?.chans || []).length}</span>
         </div>
         {(sess?.chans || []).filter((c) => c.sid.includes(q) || others.some((o) => o.includes(q)) || q === "").map((c) => (
-          <div key={c.sid} className={c.sid === sel ? "xguGG nNBWY" : "xguGG"} onClick={() => select(c.sid)}>
+          <button key={c.sid} type="button" className={c.sid === sel ? "xguGG nNBWY" : "xguGG"} onClick={() => select(c.sid)}>
             {short(c.sid)}{c.unread > 0 ? " (" + c.unread + ")" : ""}
-          </div>
+          </button>
         ))}
         <div className="HtWIW">
           <div className="n2UDd">Y</div>
@@ -1389,16 +1390,16 @@ async function refreshPresence(s: Sess) {
                   {groups.length > 0 ? (
                     <div className="cHp1R" key={groups.map((g) => g.emo + g.n).join("|")}>
                       {groups.map((g) => (
-                        <span key={g.emo} onClick={() => void toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></span>
+                        <button key={g.emo} type="button" onClick={() => void toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></button>
                       ))}
                     </div>
                   ) : null}
                   {hover === m.id ? (
                     <div className="rBr3A">
-                      <span onClick={() => void toggleMark(m.id, "❤️")}>❤️</span>
-                      <span onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></span>
+                      <button type="button" className="rIc7S" onClick={() => void toggleMark(m.id, "❤️")}>❤️</button>
+                      <button type="button" onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></button>
                       {m.mine ? (
-                        <span onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></span>
+                        <button type="button" onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></button>
                       ) : null}
                     </div>
                   ) : null}
@@ -1412,7 +1413,7 @@ async function refreshPresence(s: Sess) {
         ) : null}
         {emoOpen ? (
           <>
-            <div className="xV2pQ" onClick={shutEmo} />
+            <button type="button" className="xV2pQ" aria-label="close reactions" onClick={shutEmo} />
             <div className={emoOut ? "eMw4E qZ4oU" : "eMw4E"}>
               <EmoPicker onPick={(n) => { void toggleMark(emoOpen, n); shutEmo(); }} />
             </div>
@@ -1420,7 +1421,7 @@ async function refreshPresence(s: Sess) {
         ) : null}
         {composeEmo ? (
           <>
-            <div className="xV2pQ" onClick={shutCmp} />
+            <button type="button" className="xV2pQ" aria-label="close emoji picker" onClick={shutCmp} />
             <div className={cmpOut ? "eMw4E qZ4oU" : "eMw4E"}>
               <EmoPicker onPick={(n) => { setText((t) => (t + n).slice(0, MAXM)); shutCmp(); box.current?.focus(); }} />
             </div>
