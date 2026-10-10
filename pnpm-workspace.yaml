@@ -6,4 +6,4 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - vite@8.3.4
   - '@types/node@26.6.5'
-  - lucide-react@1.54.0
+  - lucide-react@1.54.0 || 1.55.0

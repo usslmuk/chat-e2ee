@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Prando from "prando";
 import { Check, Copy, Download, FileText, Plus, Smile, Trash2, X as CloseIcon } from "lucide-react";
 import { bundle, delLink, delMsg, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, ice, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
 
@@ -49,6 +50,8 @@ function rid(n: number) {
   crypto.getRandomValues(b);
   return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
+
+const rng = new Prando(rid(16));
 
 const blobUrls = new Map<string, Held>();
 const CACHE_MAX = 60;
@@ -266,12 +269,12 @@ export default function Shell() {
     s.chans = s.chans.map((x) => (x.sid === sid ? { ...x, unread: 0 } : x));
     setSess({ ...s });
     window.history.replaceState(null, "", "?l=" + ch.sid);
-    tick();
-    loadMarks(sid);
+    void tick();
+    void loadMarks(sid);
   }
 
   useEffect(() => {
-    boot();
+    void boot();
     const guard = window.setTimeout(() => {
       if (!bootDone.current) {
         setErr("still trying to reach the server, is it up?");
@@ -342,7 +345,7 @@ export default function Shell() {
       await W.ready();
       W.setSelfKey();
       setSess(s);
-      announce(s);
+      void announce(s);
       const l = new URLSearchParams(window.location.search).get("l") || "";
       if (l) {
         await openLink(s, l);
@@ -397,7 +400,7 @@ export default function Shell() {
         }
         if (m.type === "presence") {
           const ss = ref.current.sess;
-          if (ss) refreshPresence(ss);
+          if (ss) void refreshPresence(ss);
         }
       },
       () => {
@@ -412,7 +415,7 @@ export default function Shell() {
       }
     );
     sock.current = stop;
-    refreshPresence(s);
+    void refreshPresence(s);
   }
 
   function goLive() {
@@ -426,7 +429,7 @@ export default function Shell() {
     const loop = () => {
       live.current = window.setTimeout(() => {
         step().then(loop, loop);
-      }, eager() ? 1200 + Math.random() * 800 : 20000 + Math.random() * 10000);
+      }, eager() ? rng.next(1200, 2000) : rng.next(20000, 30000));
     };
     loop();
   }
@@ -577,7 +580,7 @@ async function refreshPresence(s: Sess) {
 
   function onType(v: string) {
     setText(v);
-    ping(v.length > 0);
+    void ping(v.length > 0);
   }
 
   async function peerOf(s: Sess, who: string) {
@@ -617,7 +620,7 @@ async function refreshPresence(s: Sess) {
       setSess({ ...s });
     }
     wirePeers(g);
-    announce(s);
+    void announce(s);
     for (const who of st.mm) {
       if (who === s.who) continue;
       try {
@@ -665,7 +668,7 @@ async function refreshPresence(s: Sess) {
         const pub = W.publishCommit(g);
         if (pub) {
           await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
-          if (W.rotationDue(g, ROTATE_DAYS)) announce(s);
+          if (W.rotationDue(g, ROTATE_DAYS)) void announce(s);
         }
       }
       await catchUp(s, g);
@@ -730,7 +733,7 @@ async function refreshPresence(s: Sess) {
       sweepTypers();
       await pull();
       await refreshPresence(s);
-      if (cur) loadMarks(cur);
+      if (cur) void loadMarks(cur);
     } finally {
       busy.current = false;
     }
@@ -867,7 +870,7 @@ async function refreshPresence(s: Sess) {
       W.forgetRatchets(g);
       const pub = W.publishCommit(g);
       if (pub) await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
-      announce(s);
+      void announce(s);
       setSess({ ...s });
     } catch (e) {
       setErr(dberr(e) ? "database unreachable" : "rotate failed");
@@ -923,7 +926,7 @@ async function refreshPresence(s: Sess) {
       }
       const code = String((await freshInvite(s.token, g)).code);
       setLink(code);
-      announce(s);
+      void announce(s);
       if (!ch) {
         s.chans.push({ sid: g, link: code, members: st.mm, unread: 0 });
         setSess({ ...s });
@@ -1053,13 +1056,16 @@ async function refreshPresence(s: Sess) {
         remember(id);
         setSess({ ...s });
         setText("");
-        ping(false);
+        void ping(false);
       } catch (e) {
         setErr(dberr(e) ? "database unreachable" : e instanceof Error ? e.message : "send failed");
       }
-    }).then(() => {
-      pull().catch(() => {});
-    });
+    }).then(
+      () => {
+        pull().catch(() => {});
+      },
+      () => {}
+    );
   }
 
   async function post(s: Sess, ch: Chan, o: { w: string; t: string; d: number; a?: Att }): Promise<string> {
@@ -1099,19 +1105,22 @@ async function refreshPresence(s: Sess) {
         setSess({ ...s });
         setText("");
         setPending(null);
-        ping(false);
+        void ping(false);
       } catch (e) {
         setErr(dberr(e) ? "database unreachable" : e instanceof Error ? e.message : "send failed");
       }
-    }).then(() => {
-      pull().catch(() => {});
-    });
+    }).then(
+      () => {
+        pull().catch(() => {});
+      },
+      () => {}
+    );
   }
 
   function keys(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      void send();
     }
   }
 
@@ -1137,7 +1146,7 @@ async function refreshPresence(s: Sess) {
         setView("home");
         window.history.replaceState(null, "", "/");
       } else {
-        tick();
+        void tick();
       }
     } catch (e) {
       setErr(dberr(e) ? "database unreachable" : "delete failed");
@@ -1223,7 +1232,7 @@ async function refreshPresence(s: Sess) {
   }
 
   function doCopy(which: number) {
-    navigator.clipboard.writeText(link);
+    navigator.clipboard.writeText(link).catch(() => {});
     setCopied(which);
     window.setTimeout(() => setCopied(0), 1200);
   }
@@ -1380,13 +1389,13 @@ async function refreshPresence(s: Sess) {
                   {groups.length > 0 ? (
                     <div className="cHp1R" key={groups.map((g) => g.emo + g.n).join("|")}>
                       {groups.map((g) => (
-                        <span key={g.emo} onClick={() => toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></span>
+                        <span key={g.emo} onClick={() => void toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></span>
                       ))}
                     </div>
                   ) : null}
                   {hover === m.id ? (
                     <div className="rBr3A">
-                      <span onClick={() => toggleMark(m.id, "❤️")}>❤️</span>
+                      <span onClick={() => void toggleMark(m.id, "❤️")}>❤️</span>
                       <span onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></span>
                       {m.mine ? (
                         <span onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></span>
@@ -1405,7 +1414,7 @@ async function refreshPresence(s: Sess) {
           <>
             <div className="xV2pQ" onClick={shutEmo} />
             <div className={emoOut ? "eMw4E qZ4oU" : "eMw4E"}>
-              <EmoPicker onPick={(n) => { toggleMark(emoOpen, n); shutEmo(); }} />
+              <EmoPicker onPick={(n) => { void toggleMark(emoOpen, n); shutEmo(); }} />
             </div>
           </>
         ) : null}
@@ -1444,7 +1453,7 @@ async function refreshPresence(s: Sess) {
             <button className="ZwE4b td7Kx" onClick={() => doCopy(2)}>{copied === 2 ? "copied" : "copy code"}</button>
           </div>
           <div className="TYj89">
-            <button className="ZwE4b td7Kx" onClick={() => { if (full) makeLink(); else newCode(); }}>{full ? "new chat" : "new code"}</button>
+            <button className="ZwE4b td7Kx" onClick={() => { if (full) void makeLink(); else void newCode(); }}>{full ? "new chat" : "new code"}</button>
           </div>
           {err ? <div className="vSx8V">{err}</div> : null}
           {isFunder ? (

@@ -63,9 +63,13 @@ function matchExport(s: string, i: number): number {
   return i;
 }
 
+function codeAt(s: string, i: number): number {
+  return s.codePointAt(i) ?? 0;
+}
+
 function matchKey(s: string, i: number): number {
   const start = i;
-  while (i < s.length && s.charCodeAt(i) < 256 && KEY_CHAR[s.charCodeAt(i)] === 1) i++;
+  while (i < s.length && codeAt(s, i) < 256 && KEY_CHAR[codeAt(s, i)] === 1) i++;
   return i === start ? -1 : i;
 }
 
@@ -150,44 +154,44 @@ function parseFast(src: string | Buffer): Record<string, string> {
   const len = str.length;
   let i = 0;
   while (i < len) {
-    let c = str.charCodeAt(i);
+    let c = codeAt(str, i);
     while (i < len && blank(c)) {
       i++;
-      c = str.charCodeAt(i);
+      c = codeAt(str, i);
     }
     if (i >= len) break;
     if (c === 35) {
-      while (i < len && !eol(str.charCodeAt(i))) i++;
+      while (i < len && !eol(codeAt(str, i))) i++;
       continue;
     }
     let exportEnd = -1;
     if (c === 101 && i + 6 < len &&
-      str.charCodeAt(i + 1) === 120 &&
-      str.charCodeAt(i + 2) === 112 &&
-      str.charCodeAt(i + 3) === 111 &&
-      str.charCodeAt(i + 4) === 114 &&
-      str.charCodeAt(i + 5) === 116) {
-      const nc = str.charCodeAt(i + 6);
+      codeAt(str, i + 1) === 120 &&
+      codeAt(str, i + 2) === 112 &&
+      codeAt(str, i + 3) === 111 &&
+      codeAt(str, i + 4) === 114 &&
+      codeAt(str, i + 5) === 116) {
+      const nc = codeAt(str, i + 6);
       if (blank(nc)) {
         let next = i + 7;
-        while (next < len && blank(str.charCodeAt(next))) next++;
-        if (KEY_CHAR[str.charCodeAt(next)]) {
+        while (next < len && blank(codeAt(str, next))) next++;
+        if (KEY_CHAR[codeAt(str, next)]) {
           exportEnd = i + 6;
           i = next;
         }
       } else {
-        c = str.charCodeAt(i);
+        c = codeAt(str, i);
       }
     }
     const keyStart = i;
     let stop = 0;
     while (i < len) {
-      stop = str.charCodeAt(i);
+      stop = codeAt(str, i);
       if (KEY_CHAR[stop]) i++;
       else break;
     }
     if (i === keyStart) {
-      while (i < len && !eol(str.charCodeAt(i))) i++;
+      while (i < len && !eol(codeAt(str, i))) i++;
       continue;
     }
     const key = str.slice(keyStart, i);
@@ -196,22 +200,22 @@ function parseFast(src: string | Buffer): Record<string, string> {
     if (blank(stop)) {
       do {
         i++;
-        stop = i < len ? str.charCodeAt(i) : 0;
+        stop = i < len ? codeAt(str, i) : 0;
       } while (blank(stop));
     }
     if (stop === 61) {
       i++;
-    } else if (stop === 58 && i === keyEnd && i + 1 < len && blank(str.charCodeAt(i + 1))) {
+    } else if (stop === 58 && i === keyEnd && i + 1 < len && blank(codeAt(str, i + 1))) {
       i += 2;
     } else {
       i = exportEnd === -1 ? keyEnd : exportEnd;
-      while (i < len && !eol(str.charCodeAt(i))) i++;
+      while (i < len && !eol(codeAt(str, i))) i++;
       continue;
     }
     const rawStart = i;
     let quoteStart = i;
-    while (quoteStart < len && blank(str.charCodeAt(quoteStart))) quoteStart++;
-    const quote = str.charCodeAt(quoteStart);
+    while (quoteStart < len && blank(codeAt(str, quoteStart))) quoteStart++;
+    const quote = codeAt(str, quoteStart);
     let value = "";
     let quoted = false;
     if (quote === 39 || quote === 34 || quote === 96) {
@@ -220,10 +224,10 @@ function parseFast(src: string | Buffer): Record<string, string> {
       let closeAt = -1;
       let closeEnd = -1;
       while (j !== -1) {
-        const escaped = str.charCodeAt(j - 1) === 92;
+        const escaped = codeAt(str, j - 1) === 92;
         let end = j + 1;
-        while (end < len && !eol(str.charCodeAt(end)) && blank(str.charCodeAt(end))) end++;
-        if (end === len || eol(str.charCodeAt(end)) || str.charCodeAt(end) === 35) {
+        while (end < len && !eol(codeAt(str, end)) && blank(codeAt(str, end))) end++;
+        if (end === len || eol(codeAt(str, end)) || codeAt(str, end) === 35) {
           closeAt = j;
           closeEnd = end;
         }
@@ -233,8 +237,8 @@ function parseFast(src: string | Buffer): Record<string, string> {
       if (closeAt !== -1) {
         value = str.slice(quoteStart + 1, closeAt);
         i = closeEnd;
-        if (str.charCodeAt(i) === 35) {
-          while (i < len && !eol(str.charCodeAt(i))) i++;
+        if (codeAt(str, i) === 35) {
+          while (i < len && !eol(codeAt(str, i))) i++;
         }
         quoted = true;
       }
@@ -248,21 +252,21 @@ function parseFast(src: string | Buffer): Record<string, string> {
         if (hash === -1 || hash > nl) hash = nl;
       } else {
         hash = rawStart;
-        while (hash < nl && str.charCodeAt(hash) !== 35) hash++;
+        while (hash < nl && codeAt(str, hash) !== 35) hash++;
       }
       let start = rawStart;
       let end = hash;
-      while (start < end && blank(str.charCodeAt(start))) start++;
-      while (end > start && blank(str.charCodeAt(end - 1))) end--;
-      const first = str.charCodeAt(start);
-      if (end - start >= 2 && (first === 39 || first === 34 || first === 96) && str.charCodeAt(end - 1) === first) {
+      while (start < end && blank(codeAt(str, start))) start++;
+      while (end > start && blank(codeAt(str, end - 1))) end--;
+      const first = codeAt(str, start);
+      if (end - start >= 2 && (first === 39 || first === 34 || first === 96) && codeAt(str, end - 1) === first) {
         value = str.slice(start + 1, end - 1);
       } else {
         value = str.slice(start, end);
       }
       i = hash;
       if (hash < nl) {
-        while (i < len && !eol(str.charCodeAt(i))) i++;
+        while (i < len && !eol(codeAt(str, i))) i++;
       }
     }
     if (quote === 34 && (quoted || quoteStart < i) && value.indexOf("\\") !== -1) {

@@ -170,6 +170,9 @@ export function delLink(token: string, g: string) {
 }
 
 export function delMsg(token: string, id: string, g: string, tok: string) {
-  const u = tok.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const swapped = tok.indexOf("+") === -1 && tok.indexOf("/") === -1 ? tok : tok.split("+").join("-").split("/").join("_");
+  let end = swapped.length;
+  while (end > 0 && swapped.charCodeAt(end - 1) === 61) end--;
+  const u = end === swapped.length ? swapped : swapped.slice(0, end);
   return call("/api/v1/msgs/" + id + "?g=" + g + "&tok=" + u, token, "DELETE") as Promise<{ ok: boolean }>;
 }
