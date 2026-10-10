@@ -28,8 +28,8 @@ port, no separate server to run.
 >   published by the MLS working group and match byte for byte. That covers the
 >   arithmetic, not the wire format of a full handshake. Welcome, commit framing,
 >   and the passive client scenarios are implemented to the spec but not checked
->   against vectors, and this has not been tested against another MLS
->   implementation, so interoperability is unproven.
+>   against vectors, and this has never been tested against another MLS
+>   implementation, so interoperability is still unproven.
 > - **Single instance only.** Presence, offers, and ICE state live in process
 >   memory. Two instances break chat. This also rules out serverless hosts.
 
@@ -144,14 +144,13 @@ Written against the specs:
 
 - RFC 9420, MLS. Tree math, key schedule, secret tree, sender ratchets, key
   packages, commits with an update path, Welcome messages, PSK proposals, leaf
-  updates, external senders, resumption secrets, exporters.
-
-Verified against the vectors published at
-`github.com/mlswg/mls-implementations/tree/main/test-vectors`, for suite `0x0001`:
-tree math across ten tree sizes up to 512 leaves, the crypto basics group, five
-consecutive key schedule epochs, and the secret tree at one, eight, and thirty two
-leaves. All match byte for byte. Suite `0x0001` only, since that is all this
-implementation supports.
+  updates, external senders, resumption secrets, exporters. Verified against the
+  vectors published at
+  `github.com/mlswg/mls-implementations/tree/main/test-vectors`, for suite `0x0001`:
+  tree math across ten tree sizes up to 512 leaves, the crypto basics group, five
+  consecutive key schedule epochs, and the secret tree at one, eight, and thirty two
+  leaves. All match byte for byte. Suite `0x0001` only, since that is all this
+  implementation supports.
 - RFC 9180, HPKE. DHKEM(X25519) base mode. Verified against the official test
   vectors: shared secret, key, base nonce, exporter secret, ciphertext, and secret
   export all match byte for byte.
@@ -289,13 +288,20 @@ MLS validated against the official RFC 9420 test vectors.
 Together those two made the key schedule, the secret tree, and the sender ratchets
 deviate from the spec. All now match the published vectors byte for byte.
 
-Not fixed. The secret tree descent still uses a `path` label and its own root
-derivation rather than the `tree` label with a `left` or `right` context from
-section 9. Both sides of every exchange use the same functions, so this is self
-consistent and secure in practice, but it is not the wire shape another
-implementation expects. Interoperability is unproven either way, and this was not
-changed because the vectors that would cover it need more than the two member
-rooms this project allows.
+- The secret tree descended with a `path` label and started from its own root
+  derivation. RFC 9420 section 9 specifies `ExpandWithLabel(., "tree", "left")` and
+  `"right"`, with the key schedule's `encryption_secret` as the root. Descent is now
+  a pure function of the encryption secret, so a member no longer mixes its held path
+  secrets into the secret tree.
+- The handshake and application ratchets were seeded by expanding the leaf secret
+  with the ratchet label and then expanding again inside the ratchet constructor.
+  The ratchet label belongs once, per section 9.
+
+Checked beyond the two member happy path. Tree descent is verified at every leaf for
+one, eight, and thirty two member trees, which is every width the published secret
+tree vectors cover. Two hundred generations on one ratchet are distinct, random
+access order does not disturb them, gaps are readable in any order, and each epoch
+of a five epoch key schedule yields distinct keys with no overlap between leaves.
 
 **Added**
 

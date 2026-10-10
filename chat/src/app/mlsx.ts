@@ -296,10 +296,7 @@ export function sealApp(g: G.Group, plaintext: Uint8Array): { ct: string; gen: n
 }
 
 export function senderSeed(g: G.Group, leaf: number): Uint8Array {
-  if (leaf === g.me) return g.seed;
-  const root = X.rootSecret(g.secrets.encryption);
-  const known = g.fromCommit.concat(g.held);
-  return X.leafSecret(root, null, known, leaf, g.n);
+  return X.leafSecret(X.rootSecret(g.secrets.encryption), leaf, g.n);
 }
 
 export function openApp(g: G.Group, blob: Uint8Array): { body: Uint8Array; leaf: number; generation: number } | null {
@@ -352,7 +349,7 @@ export function confirmTag(g: G.Group): Uint8Array {
 }
 
 export function leafSecretAt(g: G.Group, leaf: number): Uint8Array {
-  return X.leafSecret(X.rootSecret(g.secrets.encryption), null, g.fromCommit, leaf, g.n);
+  return X.leafSecret(X.rootSecret(g.secrets.encryption), leaf, g.n);
 }
 
 export function nodeSecretOf(v: Uint8Array): Uint8Array {

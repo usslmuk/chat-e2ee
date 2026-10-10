@@ -291,7 +291,7 @@ export function create(id: Uint8Array, self: Self, pkg: Uint8Array, init: K.Key)
 
 export function refresh(g: Group, own: Uint8Array | null, held: X.Held[]): void {
   const root = X.rootSecret(g.secrets.encryption);
-  const ls = X.leafSecret(root, own, held, g.me, g.n);
+  const ls = X.leafSecret(root, g.me, g.n);
   const r = X.ratchets(ls);
   g.hs = r.hs;
   g.app = r.app;
