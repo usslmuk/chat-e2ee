@@ -125,7 +125,7 @@ function FileView({ id, conv, token, name, mime, size, big, out, onBig, onShut }
     return () => window.removeEventListener("keydown", h);
   }, [big]);
   async function copy() {
-    if (!held || !held.type.startsWith("image/")) return;
+    if (!held?.type.startsWith("image/")) return;
     try {
       const r = await fetch(url);
       const b = await r.blob();
@@ -496,11 +496,7 @@ export default function Shell() {
     const m = wirePeers(g);
     const s = ref.current.sess;
     if (!m || !s) return;
-    for (const who of m.online) {
-      try {
-        await P2P.dial(m, who);
-      } catch (e) {}
-    }
+    await Promise.allSettled([...m.online].map((who) => P2P.dial(m, who)));
   }
 
   function noteTyping(who: string, on: boolean) {

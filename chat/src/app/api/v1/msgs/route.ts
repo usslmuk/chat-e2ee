@@ -81,6 +81,14 @@ function capPage(page: { [key: string]: unknown }[]): { kept: { [key: string]: u
   return { kept, capped };
 }
 
+function cursorOf(kept: { [key: string]: unknown }[], more: boolean): string | null {
+  if (!more || kept.length === 0) return null;
+  const id = kept[kept.length - 1]._id;
+  if (id instanceof ObjectId) return id.toHexString();
+  if (typeof id === "string") return id;
+  return null;
+}
+
 function msgView(r: { [key: string]: unknown }): { id: string; g: string; ct: string; sg: string; bo: number } {
   return {
     id: String(r[C.msgs.id]),
@@ -116,8 +124,7 @@ export async function GET(req: Request) {
 
   const { kept, capped } = capPage(page as { [key: string]: unknown }[]);
 
-  const lastKept = kept.length ? kept[kept.length - 1]._id : null;
-  const cursorOut = more && lastKept ? String(lastKept) : null;
+  const cursorOut = cursorOf(kept, more);
   return Response.json({
     more,
     cursor: cursorOut,

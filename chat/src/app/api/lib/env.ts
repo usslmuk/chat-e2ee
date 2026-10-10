@@ -42,8 +42,6 @@ export function optionsFromEnv(env: EnvMap = process.env): Record<string, string
   return out;
 }
 
-const LINE = /^[ \t]*(?:export[ \t]+)?([\w.-]+)[ \t]*(?:=[ \t]*|:[ \t]+)?([^\r\n]*)$/gm;
-
 const KEY_CHAR = new Uint8Array(256);
 for (let i = 48; i <= 57; i++) KEY_CHAR[i] = 1;
 for (let i = 65; i <= 90; i++) KEY_CHAR[i] = 1;
@@ -52,38 +50,86 @@ KEY_CHAR[45] = 1;
 KEY_CHAR[46] = 1;
 KEY_CHAR[95] = 1;
 
+function takeBlanks(s: string, i: number): number {
+  while (i < s.length && (s[i] === " " || s[i] === "\t")) i++;
+  return i;
+}
+
+function matchExport(s: string, i: number): number {
+  if (s.startsWith("export", i)) {
+    const j = takeBlanks(s, i + 6);
+    if (j > i + 6 && j < s.length) return j;
+  }
+  return i;
+}
+
+function matchKey(s: string, i: number): number {
+  const start = i;
+  while (i < s.length && s.charCodeAt(i) < 256 && KEY_CHAR[s.charCodeAt(i)] === 1) i++;
+  return i === start ? -1 : i;
+}
+
+function splitLine(line: string): { key: string; raw: string } | null {
+  let i = takeBlanks(line, 0);
+  if (i >= line.length || line[i] === "#") return null;
+  i = matchExport(line, i);
+  const keyEnd = matchKey(line, i);
+  if (keyEnd === -1) return null;
+  const key = line.slice(i, keyEnd);
+  i = takeBlanks(line, keyEnd);
+  if (i < line.length && line[i] === "=") {
+    i = takeBlanks(line, i + 1);
+    return { key, raw: line.slice(i) };
+  }
+  if (i < line.length && line[i] === ":") {
+    if (i + 1 >= line.length || (line[i + 1] !== " " && line[i + 1] !== "\t")) return null;
+    i = takeBlanks(line, i + 1);
+    return { key, raw: line.slice(i) };
+  }
+  if (i >= line.length) return null;
+  if (line[i] === "#") return { key, raw: "" };
+  return null;
+}
+
+function unquote(raw: string): string {
+  const first = raw[0];
+  let close = -1;
+  for (let i = 1; i < raw.length; i++) {
+    if (raw[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (raw[i] === first) {
+      close = i;
+      break;
+    }
+  }
+  return close === -1 ? raw : raw.slice(1, close);
+}
+
+function stripComment(raw: string): string {
+  const hash = raw.indexOf("#");
+  return hash === -1 ? raw.trim() : raw.slice(0, hash).trim();
+}
+
+function decodeValue(raw: string): string {
+  const text = raw.trim();
+  const first = text[0];
+  if (first === "'" || first === '"' || first === "`") {
+    const inner = unquote(text);
+    return first === '"' ? inner.replace(/\\n/g, "\n").replace(/\\r/g, "\r") : inner;
+  }
+  return stripComment(text);
+}
+
 function parseRegex(src: string | Buffer): Record<string, string> {
   const obj: Record<string, string> = {};
-  let text = src.toString();
-  text = text.replace(/\r\n?/mg, "\n");
-  let m: RegExpExecArray | null;
-  while ((m = LINE.exec(text)) != null) {
-    const key = m[1];
-    let value = (m[2] || "").trim();
-    const first = value[0];
-    if (first === "'" || first === '"' || first === "`") {
-      let close = -1;
-      for (let i = 1; i < value.length; i++) {
-        if (value[i] === "\\") {
-          i++;
-          continue;
-        }
-        if (value[i] === first) {
-          close = i;
-          break;
-        }
-      }
-      if (close !== -1) value = value.slice(1, close);
-    } else {
-      const hash = value.indexOf("#");
-      if (hash !== -1) value = value.slice(0, hash).trim();
-    }
-    const q = first;
-    if (q === '"') {
-      value = value.replace(/\\n/g, "\n");
-      value = value.replace(/\\r/g, "\r");
-    }
-    obj[key] = value;
+  const text = src.toString().replace(/\r\n?/mg, "\n");
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const parts = splitLine(line);
+    if (!parts) continue;
+    obj[parts.key] = decodeValue(parts.raw);
   }
   return obj;
 }

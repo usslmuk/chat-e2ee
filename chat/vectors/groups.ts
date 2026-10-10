@@ -393,21 +393,13 @@ function describeProposal(p: F.Proposal): string {
 
 type CommitState = { epoch: number; n: number; nodes: T.TNode[]; confirmedHash: Uint8Array; tag: Uint8Array; init: Uint8Array };
 
-function checkCommitSig(
-  r: Report,
-  g: Joined,
-  nodes: T.TNode[],
-  n: number,
-  confirmedHash: Uint8Array,
-  ext: Uint8Array,
-  epoch: number,
-  c: Commit,
-  sigKey: Uint8Array,
-): void {
-  const signCtx = P.groupContextExt(g.info.groupId, epoch, g.info.suite, HS.treeHash(nodes, n), confirmedHash, ext);
-  r.check(
+type SigCheck = { r: Report; g: Joined; st: CommitState; ext: Uint8Array; c: Commit; sigKey: Uint8Array };
+
+function checkCommitSig(args: SigCheck): void {
+  const signCtx = P.groupContextExt(args.g.info.groupId, args.st.epoch, args.g.info.suite, HS.treeHash(args.st.nodes, args.st.n), args.st.confirmedHash, args.ext);
+  args.r.check(
     "commit signature",
-    ed25519.verify(c.signature, F.tbsLabel("FramedContentTBS", F.contentTbs(F.WIRE_PUBLIC, c.content, signCtx)), sigKey),
+    ed25519.verify(args.c.signature, F.tbsLabel("FramedContentTBS", F.contentTbs(F.WIRE_PUBLIC, args.c.content, signCtx)), args.sigKey),
     "signature does not verify over FramedContentTBS with the sender's leaf signature key",
   );
 }
@@ -429,16 +421,10 @@ function checkResolutions(r: Report, c: Commit, size: number, after: T.TNode[], 
   }
 }
 
-function deriveCommitState(
-  r: Report,
-  g: Joined,
-  st: CommitState,
-  c: Commit,
-  e: { epoch_authenticator: string },
-  encPriv: Uint8Array,
-  resolver: Map<string, Uint8Array>,
-  ext: Uint8Array,
-): CommitState {
+type DeriveInput = { r: Report; g: Joined; st: CommitState; c: Commit; e: { epoch_authenticator: string }; encPriv: Uint8Array; resolver: Map<string, Uint8Array> };
+
+function deriveCommitState(args: DeriveInput, ext: Uint8Array): CommitState {
+  const { r, g, st, c, e, encPriv, resolver } = args;
   const applied = applyProposals(st.nodes, st.n, c.proposals, resolver);
   r.check("add proposals yield a leaf", applied.skipped === 0, applied.skipped + " of " + c.proposals.filter((p) => p.t === F.ADD).length + " added leaves are not in a form this implementation reads");
   const size = applied.n;
@@ -507,11 +493,11 @@ export async function handlingCommit(r: Report): Promise<void> {
         r.check("sender leaf is populated", false);
         continue;
       }
-      checkCommitSig(r, g, st.nodes, st.n, st.confirmedHash, ext, st.epoch, c, (senderLeaf.v as T.Leaf).sigKey);
+      checkCommitSig({ r, g, st, ext, c, sigKey: (senderLeaf.v as T.Leaf).sigKey });
       const fdp = T.filteredDirectPath(st.nodes, c.sender, st.n);
       if (c.path) paths++;
       checkCommitPath(r, g, st.nodes, c, fdp);
-      st = deriveCommitState(r, g, st, c, e, encPriv, resolver, ext);
+      st = deriveCommitState({ r, g, st, c, e, encPriv, resolver }, ext);
       derived++;
     }
   }

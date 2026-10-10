@@ -25,17 +25,17 @@ process.stdout.write("\nchat. MLS test vectors\n\n");
 
 let failed = 0;
 
+async function runOne(name: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (e) {
+    failed++;
+    process.stdout.write("  " + name.padEnd(30) + "  threw: " + (e as Error).stack + "\n");
+  }
+}
+
 const pending = families.filter(([name]) => only.size === 0 || only.has(name));
-await pending.reduce(
-  (chain, [name, run]) =>
-    chain.then(() =>
-      run().catch((e) => {
-        failed++;
-        process.stdout.write("  " + name.padEnd(30) + "  threw: " + (e as Error).stack + "\n");
-      }),
-    ),
-  Promise.resolve(),
-);
+await pending.reduce((chain, [name, run]) => chain.then(() => runOne(name, run)), Promise.resolve());
 
 process.stdout.write("\n");
 process.exit(failed === 0 ? 0 : 1);
