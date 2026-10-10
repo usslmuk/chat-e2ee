@@ -98,11 +98,9 @@ function parsePackage(pkg: Uint8Array): F.Leaf {
   return leaf;
 }
 
-export function signLeaf(self: Self, v: F.Leaf, groupId: Uint8Array | null, index: number): F.Leaf {
+export function signLeaf(self: Self, v: F.Leaf, _groupId: Uint8Array | null, _index: number): F.Leaf {
   const tbs = F.leafTbsOf(v);
-  void groupId;
-  void index;
-  return { ...v, tbs, signature: ed25519.sign(F.tbsLabel("LeafNodeTBS", F.leafTbs({ ...v, tbs }, groupId, index)), self.sigPriv) };
+  return { ...v, tbs, signature: ed25519.sign(F.tbsLabel("LeafNodeTBS", F.leafTbs({ ...v, tbs }, _groupId, _index)), self.sigPriv) };
 }
 
 export function verifyLeaf(v: F.Leaf, groupId: Uint8Array | null, index: number): boolean {
@@ -818,7 +816,7 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
 
 function holdsKey(t: T.TNode[], n: number, leaf: number, node: number): boolean {
   if (node === 2 * leaf) return true;
-  return T.directPath(2 * leaf, n).indexOf(node) >= 0;
+  return T.directPath(2 * leaf, n).includes(node);
 }
 
 function parentHashChain(

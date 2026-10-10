@@ -62,9 +62,10 @@ export async function ready(): Promise<void> {
       }
       const store = tx.objectStore(STORE);
       for (const k of keys) {
-        const g = store.get(k as string);
+        if (typeof k !== "string") continue;
+        const g = store.get(k);
         g.onsuccess = () => {
-          if (g.result !== undefined) mem.set(String(k), g.result);
+          if (g.result !== undefined) mem.set(k, g.result);
         };
       }
       tx.oncomplete = () => resolve();
@@ -112,7 +113,7 @@ export function keys(): string[] {
 }
 
 export async function wipe(): Promise<void> {
-  for (const k of [...mem.keys()]) del(k);
+  for (const k of mem.keys()) del(k);
   const d = await open();
   if (!d) return;
   await new Promise<void>((resolve) => {

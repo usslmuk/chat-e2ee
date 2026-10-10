@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hmac } from "@noble/hashes/hmac.js";
-import { NH, NK, NN, makeHpke, type Hpke } from "./hpke.ts";
-import { suiteOf, type CHash, type Suite } from "./suite.ts";
+import { NH, NK, NN } from "./hpke.ts";
+import { suiteOf } from "./suite.ts";
 
 function cat(...p: Uint8Array[]): Uint8Array {
   let n = 0;

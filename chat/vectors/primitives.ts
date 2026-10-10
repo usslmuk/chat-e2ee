@@ -1,5 +1,4 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { Buf, Writer } from "../src/app/mls/wire.ts";
 import * as K from "../src/app/mls/hpke.ts";
 import * as S from "../src/app/mls/schedule.ts";
@@ -11,26 +10,34 @@ import { Report, hex, suite } from "./support.ts";
 const PREFIX = "MLS 1.0 ";
 const bare = (label: string): string => (label.startsWith(PREFIX) ? label.slice(PREFIX.length) : label);
 
+function checkTreeNode(r: Report, x: number, n: number, v: { root: number; left: (number | null)[]; right: (number | null)[]; parent: (number | null)[]; sibling: (number | null)[] }): void {
+  const want = (a: (number | null)[]) => a[x];
+  if (T.level(x) > 0 && want(v.left) !== null) r.check("left " + x, T.left(x) === want(v.left), T.left(x) + " want " + want(v.left));
+  if (T.level(x) > 0 && want(v.right) !== null) r.check("right " + x, T.right(x) === want(v.right), T.right(x) + " want " + want(v.right));
+  if (x !== v.root && want(v.parent) !== null) r.check("parent " + x, T.parent(x, n) === want(v.parent), T.parent(x, n) + " want " + want(v.parent));
+  if (x !== v.root && want(v.sibling) !== null) r.check("sibling " + x, T.sibling(x, n) === want(v.sibling), T.sibling(x, n) + " want " + want(v.sibling));
+}
+
+function checkTreeEntry(r: Report, v: { n_leaves: number; root: number; n_nodes: number; left: (number | null)[]; right: (number | null)[]; parent: (number | null)[]; sibling: (number | null)[] }): void {
+  const n = v.n_leaves;
+  r.check("root", T.root(n) === v.root, T.root(n) + " want " + v.root);
+  r.check("node count", T.alloc(n) === v.n_nodes, T.alloc(n) + " want " + v.n_nodes);
+  for (let x = 0; x < v.n_nodes; x++) checkTreeNode(r, x, n, v);
+}
+
 export async function treeMath(r: Report): Promise<void> {
   const entries = await suite("tree-math");
-  for (const v of entries) {
-    const n = v.n_leaves;
-    r.check("root", T.root(n) === v.root, T.root(n) + " want " + v.root);
-    r.check("node count", T.alloc(n) === v.n_nodes, T.alloc(n) + " want " + v.n_nodes);
-    for (let x = 0; x < v.n_nodes; x++) {
-      const want = (a: (number | null)[]) => a[x];
-      if (T.level(x) > 0 && want(v.left) !== null) r.check("left " + x, T.left(x) === want(v.left), T.left(x) + " want " + want(v.left));
-      if (T.level(x) > 0 && want(v.right) !== null) r.check("right " + x, T.right(x) === want(v.right), T.right(x) + " want " + want(v.right));
-      if (x !== v.root && want(v.parent) !== null) r.check("parent " + x, T.parent(x, n) === want(v.parent), T.parent(x, n) + " want " + want(v.parent));
-      if (x !== v.root && want(v.sibling) !== null) r.check("sibling " + x, T.sibling(x, n) === want(v.sibling), T.sibling(x, n) + " want " + want(v.sibling));
-    }
-  }
+  for (const v of entries) checkTreeEntry(r, v);
   r.family("tree-math", entries.length + " trees");
 }
 
 export async function cryptoBasics(r: Report): Promise<void> {
   const entries = await suite("crypto-basics");
-  const one = (x: any) => (Array.isArray(x) ? x : x ? [x] : []);
+  const one = (x: any): any[] => {
+    if (Array.isArray(x)) return x;
+    if (x) return [x];
+    return [];
+  };
   for (const v of entries) {
     for (const c of one(v.expand_with_label)) r.equal("expandWithLabel", S.expandWithLabel(hex(c.secret), bare(c.label), hex(c.context), c.length), c.out);
     for (const c of one(v.derive_secret)) r.equal("deriveSecret", S.deriveSecret(hex(c.secret), bare(c.label)), c.out);

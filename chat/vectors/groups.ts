@@ -1,6 +1,16 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { Buf, Writer } from "../src/app/mls/wire.ts";
+import { Buf } from "../src/app/mls/wire.ts";
+import * as K from "../src/app/mls/hpke.ts";
+import * as S from "../src/app/mls/schedule.ts";
+import * as F from "../src/app/mls/frame.ts";
+import * as R from "../src/app/mls/rfc.ts";
+import * as HS from "../src/app/mls/hash.ts";
+import * as P from "../src/app/mls/psk.ts";
+import * as T from "../src/app/mls/tree.ts";
+import { Report, hex, suite, opt } from "./support.ts";
+import { verifyLeaf } from "../src/app/mls/commit.ts";
+import { suiteSelfTest } from "../src/app/mls/selftest.ts";
 
 const cat = (...p: Uint8Array[]): Uint8Array => {
   const n = p.reduce((a, x) => a + x.length, 0);
@@ -12,17 +22,6 @@ const cat = (...p: Uint8Array[]): Uint8Array => {
   }
   return o;
 };
-import { sha256 } from "@noble/hashes/sha2.js";
-import * as K from "../src/app/mls/hpke.ts";
-import * as S from "../src/app/mls/schedule.ts";
-import * as F from "../src/app/mls/frame.ts";
-import * as R from "../src/app/mls/rfc.ts";
-import * as HS from "../src/app/mls/hash.ts";
-import * as P from "../src/app/mls/psk.ts";
-import * as T from "../src/app/mls/tree.ts";
-import { Report, hex, suite, opt } from "./support.ts";
-import { verifyLeaf } from "../src/app/mls/commit.ts";
-import { sha256 } from "@noble/hashes/sha2.js";
 
 export function toNodes(wire: F.RatchetTree[]): T.TNode[] {
   return wire.map((nd) => {
@@ -110,6 +109,55 @@ export async function treeOperations(r: Report): Promise<void> {
   r.family("tree-operations", entries.length + " x 2 tree hashes");
 }
 
+function welcomeRefIndex(w: R.WelcomeRfc, kp: Uint8Array): number {
+  const forms: Uint8Array[] = [sha256(kp), F.keyPackageRef(kp)];
+  for (const [i, sec] of w.secrets.entries()) {
+    if (forms.some((f) => Buffer.from(f).equals(Buffer.from(sec.ref)))) return i;
+  }
+  return -1;
+}
+
+function openWelcomeInfo(w: R.WelcomeRfc, initPriv: Uint8Array, r: Report): R.GroupInfoRfc | null {
+  for (const sec of w.secrets) {
+    try {
+      const shared = K.decap(initPriv, sec.kemOutput);
+      const gs = K.openC(K.keySchedule(shared, F.tbsLabel("Welcome", w.encryptedGroupInfo)), new Uint8Array(0), sec.ciphertext);
+      const secrets = R.readGroupSecrets(new Buf(gs));
+      r.check("joiner secret", secrets.joiner.length === 32);
+      r.check(
+        "empty and zeros psk salts agree",
+        Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(0))).equals(Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(32)))),
+        Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(0))).toString("hex").slice(0, 16) +
+          " vs " +
+          Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(32))).toString("hex").slice(0, 16),
+      );
+      const forms: Uint8Array[] = [
+        S.joinerFromJoiner(secrets.joiner, new Uint8Array(0)),
+        S.joinerFromJoiner(secrets.joiner, new Uint8Array(32)),
+        secrets.joiner,
+      ];
+      for (const mixed of forms) {
+        try {
+          return R.readGroupInfoRfc(new Buf(R.openGroupInfo(S.deriveSecret(mixed, "welcome"), w.encryptedGroupInfo)));
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function checkWelcomeInfo(r: Report, info: R.GroupInfoRfc, signerPub: Uint8Array): void {
+  r.check("group info signature", ed25519.verify(info.signature, F.tbsLabel("GroupInfoTBS", R.groupInfoTbs(info)), signerPub));
+  r.check("confirmation tag", info.confirmationTag.length === 32);
+  if (!info.tree) return;
+  const raw = toNodes(F.readRatchetTree(new Buf(info.tree)));
+  r.equal("ratchet tree extension hash", HS.treeHash(pad(raw, countLeaves(raw)), countLeaves(raw)), info.treeHash);
+}
+
 export async function welcome(r: Report): Promise<void> {
   const entries = await suite("welcome");
   let refs = 0;
@@ -117,46 +165,10 @@ export async function welcome(r: Report): Promise<void> {
     const w = R.readWelcome(new Buf(hex(v.welcome)));
     r.check("version", w.version === 1);
     r.check("cipher suite", w.suite === v.cipher_suite);
-    const kp = hex(v.key_package);
-    const refForms: Uint8Array[] = [sha256(kp), F.keyPackageRef(kp)];
-    let picked = -1;
-    let info: R.GroupInfoRfc | null = null;
-    for (const [i, sec] of w.secrets.entries()) {
-      if (refForms.some((f) => Buffer.from(f).equals(Buffer.from(sec.ref)))) picked = i;
-      try {
-        const shared = K.decap(hex(v.init_priv), sec.kemOutput);
-        const gs = K.openC(K.keySchedule(shared, F.tbsLabel("Welcome", w.encryptedGroupInfo)), new Uint8Array(0), sec.ciphertext);
-        const secrets = R.readGroupSecrets(new Buf(gs));
-        r.check("joiner secret", secrets.joiner.length === 32);
-        r.check("empty and zeros psk salts agree", Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(0))).equals(Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(32)))), Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(0))).toString("hex").slice(0, 16) + " vs " + Buffer.from(S.joinerFromJoiner(secrets.joiner, new Uint8Array(32))).toString("hex").slice(0, 16));
-        const forms: [string, Uint8Array][] = [
-          ["empty", S.joinerFromJoiner(secrets.joiner, new Uint8Array(0))],
-          ["zeros", S.joinerFromJoiner(secrets.joiner, new Uint8Array(32))],
-          ["identity", secrets.joiner],
-        ];
-        for (const [name, mixed] of forms) {
-          try {
-            const ws = S.deriveSecret(mixed, "welcome");
-            const gi = R.readGroupInfoRfc(new Buf(R.openGroupInfo(ws, w.encryptedGroupInfo)));
-            info = gi;
-            break;
-          } catch {
-            continue;
-          }
-        }
-        if (info) break;
-      } catch {
-        continue;
-      }
-    }
-    if (picked >= 0) refs++;
+    if (welcomeRefIndex(w, hex(v.key_package)) >= 0) refs++;
+    const info = openWelcomeInfo(w, hex(v.init_priv), r);
     if (!info) throw new Error("no group secret decrypted for this key package");
-    r.check("group info signature", ed25519.verify(info.signature, F.tbsLabel("GroupInfoTBS", R.groupInfoTbs(info)), hex(v.signer_pub)));
-    r.check("confirmation tag", info.confirmationTag.length === 32);
-    if (info.tree) {
-      const raw = toNodes(F.readRatchetTree(new Buf(info.tree)));
-      r.equal("ratchet tree extension hash", HS.treeHash(pad(raw, countLeaves(raw)), countLeaves(raw)), info.treeHash);
-    }
+    checkWelcomeInfo(r, info, hex(v.signer_pub));
   }
   r.family("welcome", entries.length + " joins, " + refs + " of " + entries.length + " key package references matched a published hash");
 }
@@ -219,8 +231,7 @@ function sharesOf(commit: Commit): Uint8Array[][] {
     const b = new Buf(nd.kemOutput);
     const out: Uint8Array[] = [];
     while (b.left > 0) {
-      out.push(b.vec());
-      out.push(b.vec());
+      out.push(b.vec(), b.vec());
     }
     return out;
   });
@@ -231,12 +242,11 @@ function resolutionExcluding(after: T.TNode[], node: number, added: number[]): n
   return all.filter((x) => !added.includes(x));
 }
 
-function pathSecretFor(commit: Commit, n: number, after: T.TNode[], priv: Uint8Array, leaf: number, ctx: Uint8Array, added: number[]): { secret: Uint8Array | null; at: string } {
+function pathSecretFor(commit: Commit, n: number, priv: Uint8Array, ctx: Uint8Array): { secret: Uint8Array | null; at: string } {
   if (!commit.path) return { secret: null, at: "no path" };
   const cp = T.copath(2 * commit.sender, n);
   const label = F.tbsLabel("UpdatePathNode", ctx);
   for (const [i, pairs] of sharesOf(commit).entries()) {
-    void resolutionExcluding(after, cp[i], added);
     for (let at = 0; 2 * at + 1 < pairs.length; at++) {
       try {
         const c = K.keySchedule(K.decap(priv, pairs[2 * at]), label);
@@ -284,56 +294,184 @@ function leafFromRfcPackage(pkg: Uint8Array): F.Leaf {
   return leaf;
 }
 
+function findFreeSlot(nodes: T.TNode[], size: number): number {
+  for (let i = 0; i < size; i++) if (nodes[2 * i].k === 0) return i;
+  return -1;
+}
+
+function growTree(nodes: T.TNode[], size: number): number {
+  const oldRoot = T.root(size);
+  const next = size * 2;
+  while (nodes.length < T.alloc(next)) nodes.push({ k: 0 });
+  const child = oldRoot;
+  (nodes[child] as { v: { parentHash: Uint8Array } }).v.parentHash = F.parentHashOf(
+    (nodes[child] as { v: { enc: Uint8Array } }).v.enc,
+    new Uint8Array(0),
+    HS.nodeHash(nodes, T.right(child), next),
+  );
+  return next;
+}
+
+function tryLeaf(pkg: Uint8Array): F.Leaf | null {
+  try {
+    return leafFromRfcPackage(pkg);
+  } catch {
+    return null;
+  }
+}
+
+function insertAdd(
+  nodes: T.TNode[],
+  size: number,
+  pkg: Uint8Array,
+  kinds: string,
+  added: number[],
+): { size: number; skipped: boolean } {
+  if (pkg.length < 4) throw new Error("add proposal carries " + pkg.length + " bytes; proposal kinds " + kinds);
+  let slot = findFreeSlot(nodes, size);
+  let next = size;
+  if (slot < 0) {
+    next = growTree(nodes, size);
+    slot = next / 2;
+  }
+  const leaf = tryLeaf(pkg);
+  if (!leaf) return { size: next, skipped: true };
+  added.push(2 * slot);
+  nodes[2 * slot] = { k: 1, v: { enc: leaf.enc, sigKey: leaf.sigKey, cred: leaf.cred, ph: new Uint8Array(0), unmerged: [], tbs: leaf.tbs, signature: leaf.signature } };
+  return { size: next, skipped: false };
+}
+
+function collectPsk(psk: Uint8Array, resolver: Map<string, Uint8Array>, psks: Uint8Array[], labels: Uint8Array[]): void {
+  const parts = F.pskIdParts(psk);
+  const value = resolver.get(Buffer.from(parts.id).toString("hex"));
+  if (!value) return;
+  psks.push(value);
+  labels.push(parts.id);
+}
+
+function shrinkTree(nodes: T.TNode[], size: number): number {
+  let next = size;
+  while (next > 2) {
+    let rightBlank = true;
+    for (let i = next / 2; i < next; i++) if (nodes[2 * i].k !== 0) rightBlank = false;
+    if (!rightBlank) break;
+    next /= 2;
+    nodes.length = T.alloc(next);
+    (nodes[next - 1] as { v: { parentHash: Uint8Array } }).v.parentHash = new Uint8Array(0);
+  }
+  return next;
+}
+
 function applyProposals(base: T.TNode[], n: number, props: F.Proposal[], resolver: Map<string, Uint8Array>): { nodes: T.TNode[]; n: number; psks: Uint8Array[]; labels: Uint8Array[]; skipped: number; added: number[] } {
-  let nodes = base.slice();
+  const nodes = base.slice();
   let size = n;
   const psks: Uint8Array[] = [];
   const labels: Uint8Array[] = [];
   const added: number[] = [];
   let skipped = 0;
+  const kinds = props.map((x) => x.t).join(",");
   for (const p of props) {
     if (p.t === F.ADD) {
-      if (p.pkg.length < 4) throw new Error("add proposal carries " + p.pkg.length + " bytes; proposal kinds " + props.map((x) => x.t).join(","));
-      let slot = -1;
-      for (let i = 0; i < size; i++) if (nodes[2 * i].k === 0) { slot = i; break; }
-      if (slot < 0) {
-        const oldRoot = T.root(size);
-        size *= 2;
-        while (nodes.length < T.alloc(size)) nodes.push({ k: 0 });
-        const child = oldRoot;
-        (nodes[child] as { v: { parentHash: Uint8Array } }).v.parentHash = F.parentHashOf((nodes[child] as { v: { enc: Uint8Array } }).v.enc, new Uint8Array(0), HS.nodeHash(nodes, T.right(child), size));
-        slot = size / 2;
-      }
-      const leaf = ((): F.Leaf | null => {
-        try {
-          return leafFromRfcPackage(p.pkg);
-        } catch {
-          return null;
-        }
-      })();
-      if (!leaf) { skipped++; continue; }
-      added.push(2 * slot);
-      nodes[2 * slot] = { k: 1, v: { enc: leaf.enc, sigKey: leaf.sigKey, cred: leaf.cred, ph: new Uint8Array(0), unmerged: [], tbs: leaf.tbs, signature: leaf.signature } };
+      const out = insertAdd(nodes, size, p.pkg, kinds, added);
+      size = out.size;
+      if (out.skipped) skipped++;
+    } else if (p.t === F.PSK) {
+      collectPsk(p.psk, resolver, psks, labels);
+    } else if (p.t === F.REMOVE) {
+      nodes[2 * p.leaf] = { k: 0 };
     }
-    if (p.t === F.PSK) {
-      const parts = F.pskIdParts(p.psk);
-      const value = resolver.get(Buffer.from(parts.id).toString("hex"));
-      if (value) {
-        psks.push(value);
-        labels.push(parts.id);
-      }
-    }
-    if (p.t === F.REMOVE) nodes[2 * p.leaf] = { k: 0 };
   }
-  while (size > 2) {
-    let rightBlank = true;
-    for (let i = size / 2; i < size; i++) if (nodes[2 * i].k !== 0) rightBlank = false;
-    if (!rightBlank) break;
-    size /= 2;
-    nodes.length = T.alloc(size);
-    (nodes[size - 1] as { v: { parentHash: Uint8Array } }).v.parentHash = new Uint8Array(0);
+  return { nodes, n: shrinkTree(nodes, size), psks, labels, skipped, added };
+}
+
+function describeProposal(p: F.Proposal): string {
+  if (p.t === F.REMOVE) return "a Remove of leaf " + p.leaf;
+  if (p.t === F.ADD) return "an Add";
+  if (p.t === F.UNKNOWN_PROPOSAL) return "a proposal of type 0x" + Buffer.from((p as { raw: Uint8Array }).raw).subarray(0, 2).toString("hex");
+  return "a proposal of type " + p.t;
+}
+
+type CommitState = { epoch: number; n: number; nodes: T.TNode[]; confirmedHash: Uint8Array; tag: Uint8Array; init: Uint8Array };
+
+function checkCommitSig(
+  r: Report,
+  g: Joined,
+  nodes: T.TNode[],
+  n: number,
+  confirmedHash: Uint8Array,
+  ext: Uint8Array,
+  epoch: number,
+  c: Commit,
+  sigKey: Uint8Array,
+): void {
+  const signCtx = P.groupContextExt(g.info.groupId, epoch, g.info.suite, HS.treeHash(nodes, n), confirmedHash, ext);
+  r.check(
+    "commit signature",
+    ed25519.verify(c.signature, F.tbsLabel("FramedContentTBS", F.contentTbs(F.WIRE_PUBLIC, c.content, signCtx)), sigKey),
+    "signature does not verify over FramedContentTBS with the sender's leaf signature key",
+  );
+}
+
+function checkCommitPath(r: Report, g: Joined, nodes: T.TNode[], c: Commit, fdp: number[]): void {
+  if (!c.path) {
+    r.check("commit carries no path", true);
+    return;
   }
-  return { nodes, n: size, psks, labels, skipped, added };
+  r.check("path length matches filtered direct path", c.path.nodes.length === fdp.length, "filtered direct path is " + fdp.length + " nodes, the path carries " + c.path.nodes.length);
+  r.check("leaf signature", ed25519.verify(c.path.leaf.signature, F.tbsLabel("LeafNodeTBS", F.leafTbs(c.path.leaf, g.info.groupId, c.sender)), c.path.leaf.sigKey));
+}
+
+function checkResolutions(r: Report, c: Commit, size: number, after: T.TNode[], added: number[]): void {
+  const cp = T.copath(2 * c.sender, size);
+  for (const [i, pairs] of sharesOf(c).entries()) {
+    const res = resolutionExcluding(after, cp[i], added);
+    r.check("ciphertext count matches the copath resolution", pairs.length === res.length * 2, "resolution of " + cp[i] + " is " + res.length + ", the path carries " + pairs.length / 2);
+  }
+}
+
+function deriveCommitState(
+  r: Report,
+  g: Joined,
+  st: CommitState,
+  c: Commit,
+  e: { epoch_authenticator: string },
+  encPriv: Uint8Array,
+  resolver: Map<string, Uint8Array>,
+  ext: Uint8Array,
+): CommitState {
+  const applied = applyProposals(st.nodes, st.n, c.proposals, resolver);
+  r.check("add proposals yield a leaf", applied.skipped === 0, applied.skipped + " of " + c.proposals.filter((p) => p.t === F.ADD).length + " added leaves are not in a form this implementation reads");
+  const size = applied.n;
+  const after = c.path ? applyPath(applied.nodes, size, c.sender, c.path) : applied.nodes;
+  const newHash = HS.treeHash(after, size);
+  const prov = P.groupContextExt(g.info.groupId, st.epoch + 1, g.info.suite, newHash, st.confirmedHash, ext);
+  const got = pathSecretFor(c, size, encPriv, prov);
+  if (c.path) {
+    checkResolutions(r, c, size, after, applied.added);
+    r.check("path secret decrypted with this client's leaf key", got.secret !== null, got.at);
+  }
+  const commitSecret = got.secret ? S.deriveSecret(got.secret, "path") : new Uint8Array(32);
+  const nextConfirmed = F.nextConfirmed(F.nextInterim(st.confirmedHash, st.tag), F.WIRE_PUBLIC, c.content, c.signature);
+  const nextCtx = P.groupContextExt(g.info.groupId, st.epoch + 1, g.info.suite, newHash, nextConfirmed, ext);
+  const es = S.epochFrom(st.init, commitSecret, applied.psks.length ? S.makePskSecret(applied.psks, applied.labels) : new Uint8Array(0), nextCtx);
+  const kinds = c.proposals.map(describeProposal);
+  r.check(
+    "epoch " + (st.epoch + 1) + " authenticator",
+    Buffer.from(es.auth).equals(Buffer.from(hex(e.epoch_authenticator))),
+    "this commit carries " + kinds.join(" and ") + (c.path ? "" : " and no update path, so its commit secret is all zeros") + ". Everything upstream verifies, so the unknown is the tree those proposals produce",
+  );
+  r.check("confirmation tag", Buffer.from(S.confirmationTag(es.confirm, nextConfirmed)).equals(Buffer.from(c.tag)), "the tag over the new confirmed transcript hash does not match");
+  return { epoch: st.epoch + 1, n: size, nodes: after, confirmedHash: nextConfirmed, tag: c.tag, init: es.init };
+}
+
+function checkInitialState(r: Report, g: Joined, v: { initial_epoch_authenticator: string; encryption_priv: string; external_psks?: unknown }): { encPriv: Uint8Array; resolver: Map<string, Uint8Array> } {
+  r.equal("epoch " + g.info.epoch + " authenticator", epochAt(g, g.info.epoch, g.info.treeHash, g.info.confirmedTranscriptHash).auth, v.initial_epoch_authenticator);
+  const treeHash = HS.treeHash(g.nodes, g.n);
+  r.check("tree hash matches group info", Buffer.from(treeHash).equals(Buffer.from(g.info.treeHash)), Buffer.from(treeHash).toString("hex").slice(0, 24) + " vs " + Buffer.from(g.info.treeHash).toString("hex").slice(0, 24));
+  const encPriv = hex(v.encryption_priv);
+  const resolver = new Map<string, Uint8Array>((Array.isArray((v as { external_psks?: unknown }).external_psks) ? (v as { external_psks: { psk_id: string; psk: string }[] }).external_psks : []).map((x) => [x.psk_id as string, hex(x.psk)]));
+  r.check("client leaf holds the vector encryption key", ownLeaf(g.nodes, K.pubOf(encPriv)) >= 0, "no leaf in the group has the public key of encryption_priv");
+  return { encPriv, resolver };
 }
 
 export async function handlingCommit(r: Report): Promise<void> {
@@ -343,18 +481,15 @@ export async function handlingCommit(r: Report): Promise<void> {
   let derived = 0;
   for (const v of entries) {
     const g = joinGroup(v, r);
-    r.equal("epoch " + g.info.epoch + " authenticator", epochAt(g, g.info.epoch, g.info.treeHash, g.info.confirmedTranscriptHash).auth, v.initial_epoch_authenticator);
-    const treeHash = HS.treeHash(g.nodes, g.n);
-    r.check("tree hash matches group info", Buffer.from(treeHash).equals(Buffer.from(g.info.treeHash)), Buffer.from(treeHash).toString("hex").slice(0, 24) + " vs " + Buffer.from(g.info.treeHash).toString("hex").slice(0, 24));
-    const encPriv = hex(v.encryption_priv);
-    const resolver = new Map<string, Uint8Array>((Array.isArray(v.external_psks) ? v.external_psks : []).map((x: any) => [x.psk_id as string, hex(x.psk)]));
-    const leaf = ownLeaf(g.nodes, K.pubOf(encPriv));
-    r.check("client leaf holds the vector encryption key", leaf >= 0, "no leaf in the group has the public key of encryption_priv");
-    let epoch = g.info.epoch;
-    let nodes = g.nodes;
-    let confirmedHash = g.info.confirmedTranscriptHash;
-    let tag = g.info.confirmationTag;
-    let init = epochAt(g, g.info.epoch, g.info.treeHash, g.info.confirmedTranscriptHash).init;
+    const { encPriv, resolver } = checkInitialState(r, g, v);
+    let st: CommitState = {
+      epoch: g.info.epoch,
+      n: g.n,
+      nodes: g.nodes,
+      confirmedHash: g.info.confirmedTranscriptHash,
+      tag: g.info.confirmationTag,
+      init: epochAt(g, g.info.epoch, g.info.treeHash, g.info.confirmedTranscriptHash).init,
+    };
     const ext = new Uint8Array(0);
     for (const e of v.epochs) {
       let c: Commit;
@@ -365,67 +500,31 @@ export async function handlingCommit(r: Report): Promise<void> {
         continue;
       }
       commits++;
-      r.check("commit epoch", c.epoch === epoch, "commit is for epoch " + c.epoch + " and the group is at " + epoch);
-      if (c.epoch !== epoch) continue;
-      const senderLeaf = nodes[2 * c.sender];
-      if (!senderLeaf || senderLeaf.k !== 1) {
+      r.check("commit epoch", c.epoch === st.epoch, "commit is for epoch " + c.epoch + " and the group is at " + st.epoch);
+      if (c.epoch !== st.epoch) continue;
+      const senderLeaf = st.nodes[2 * c.sender];
+      if (senderLeaf?.k !== 1) {
         r.check("sender leaf is populated", false);
         continue;
       }
-      const signCtx = P.groupContextExt(g.info.groupId, epoch, g.info.suite, HS.treeHash(nodes, g.n), confirmedHash, ext);
-      r.check(
-        "commit signature",
-        ed25519.verify(c.signature, F.tbsLabel("FramedContentTBS", F.contentTbs(F.WIRE_PUBLIC, c.content, signCtx)), senderLeaf.v.sigKey),
-        "signature does not verify over FramedContentTBS with the sender's leaf signature key",
-      );
-      const fdp = T.filteredDirectPath(nodes, c.sender, g.n);
-      if (c.path) {
-        paths++;
-        r.check("path length matches filtered direct path", c.path.nodes.length === fdp.length, "filtered direct path is " + fdp.length + " nodes, the path carries " + c.path.nodes.length);
-        r.check("leaf signature", ed25519.verify(c.path.leaf.signature, F.tbsLabel("LeafNodeTBS", F.leafTbs(c.path.leaf, g.info.groupId, c.sender)), c.path.leaf.sigKey));
-        const cp = T.copath(2 * c.sender, g.n);
-        void cp;
-      } else {
-        r.check("commit carries no path", true);
-      }
-
-      const applied = applyProposals(nodes, g.n, c.proposals, resolver);
-      r.check("add proposals yield a leaf", applied.skipped === 0, applied.skipped + " of " + c.proposals.filter((p) => p.t === F.ADD).length + " added leaves are not in a form this implementation reads");
-      const size = applied.n;
-      const after = c.path ? applyPath(applied.nodes, size, c.sender, c.path) : applied.nodes;
-      const newHash = HS.treeHash(after, size);
-      const prov = P.groupContextExt(g.info.groupId, epoch + 1, g.info.suite, newHash, confirmedHash, ext);
-      const got = pathSecretFor(c, size, after, encPriv, leaf, prov, applied.added);
-      if (c.path) {
-        const cp = T.copath(2 * c.sender, size);
-        for (const [i, pairs] of sharesOf(c).entries()) {
-          const res = resolutionExcluding(after, cp[i], applied.added);
-          r.check("ciphertext count matches the copath resolution", pairs.length === res.length * 2, "resolution of " + cp[i] + " is " + res.length + ", the path carries " + pairs.length / 2);
-        }
-        r.check("path secret decrypted with this client's leaf key", got.secret !== null, got.at);
-      }
-      const commitSecret = got.secret ? S.deriveSecret(got.secret, "path") : new Uint8Array(32);
-      const nextConfirmed = F.nextConfirmed(F.nextInterim(confirmedHash, tag), F.WIRE_PUBLIC, c.content, c.signature);
-      
-      const nextCtx = P.groupContextExt(g.info.groupId, epoch + 1, g.info.suite, newHash, nextConfirmed, ext);
-      const es = S.epochFrom(init, commitSecret, applied.psks.length ? S.makePskSecret(applied.psks, applied.labels) : new Uint8Array(0), nextCtx);
-      const kinds = c.proposals.map((p) => (p.t === F.REMOVE ? "a Remove of leaf " + p.leaf : p.t === F.ADD ? "an Add" : p.t === F.UNKNOWN_PROPOSAL ? "a proposal of type 0x" + Buffer.from((p as { raw: Uint8Array }).raw).subarray(0, 2).toString("hex") : "a proposal of type " + p.t));
-      r.check(
-        "epoch " + (epoch + 1) + " authenticator",
-        Buffer.from(es.auth).equals(Buffer.from(hex(e.epoch_authenticator))),
-        "this commit carries " + kinds.join(" and ") + (c.path ? "" : " and no update path, so its commit secret is all zeros") + ". Everything upstream verifies, so the unknown is the tree those proposals produce",
-      );
-      r.check("confirmation tag", Buffer.from(S.confirmationTag(es.confirm, nextConfirmed)).equals(Buffer.from(c.tag)), "the tag over the new confirmed transcript hash does not match");
+      checkCommitSig(r, g, st.nodes, st.n, st.confirmedHash, ext, st.epoch, c, (senderLeaf.v as T.Leaf).sigKey);
+      const fdp = T.filteredDirectPath(st.nodes, c.sender, st.n);
+      if (c.path) paths++;
+      checkCommitPath(r, g, st.nodes, c, fdp);
+      st = deriveCommitState(r, g, st, c, e, encPriv, resolver, ext);
       derived++;
-      nodes = after;
-      g.n = size;
-      confirmedHash = nextConfirmed;
-      tag = c.tag;
-      init = es.init;
-      epoch += 1;
     }
   }
   r.family("passive-client-handling-commit", commits + " commits, " + paths + " with an update path, " + derived + " epoch transitions derived end to end");
+}
+
+export function cipherSuites(r: Report): Promise<void> {
+  for (const id of [1, 2]) {
+    const out = suiteSelfTest(id);
+    r.check("suite " + id + " self test", out.ok, out.label + ": " + out.fails.join("; "));
+  }
+  r.family("cipher-suites", "both RFC 9420 suites: KEM, AEAD, sign, derivePair");
+  return Promise.resolve();
 }
 
 export async function transcriptHashes(r: Report): Promise<void> {
@@ -475,6 +574,67 @@ export async function passiveClientWelcome(r: Report): Promise<void> {
   r.family("passive-client-welcome", entries.length + " joins");
 }
 
+function checkHeldKeys(r: Report, base: T.TNode[], holders: { path_secrets: { node: number; path_secret: string }[] }[], nodeKey: (s: Uint8Array) => string): void {
+  for (const holder of holders) {
+    for (const held of holder.path_secrets) {
+      const node = base[held.node];
+      if (!node || node.k === 0) {
+        r.check("held node " + held.node + " is populated", false);
+        continue;
+      }
+      r.check(
+        "held key at node " + held.node,
+        nodeKey(hex(held.path_secret)) === Buffer.from((node as { v: { enc: Uint8Array } }).v.enc).toString("hex"),
+        "DeriveKeyPair(DeriveSecret(secret, \"node\")) does not match the public key in the tree",
+      );
+    }
+  }
+}
+
+function checkUpdateSecrets(r: Report, secrets: Uint8Array[], keys: Set<string>, next: Set<string>, nodeKey: (s: Uint8Array) => string, commitSecret: string): void {
+  for (const secret of secrets) {
+    r.check("path secret yields a node key", keys.has(nodeKey(secret)), "no node on the filtered direct path has the matching public key");
+  }
+  for (const secret of secrets) {
+    r.check(
+      "path secret continues the chain",
+      next.has(Buffer.from(S.deriveSecret(secret, "path")).toString("hex")),
+      "DeriveSecret(secret, \"path\") is neither another published path secret nor the commit secret",
+    );
+  }
+  r.check(
+    "commit secret ends the chain",
+    secrets.some((s) => Buffer.from(S.deriveSecret(s, "path")).equals(Buffer.from(hex(commitSecret)))),
+    "no published path secret derives the commit secret",
+  );
+}
+
+function checkUpdatePath(
+  r: Report,
+  base: T.TNode[],
+  n: number,
+  v: { group_id: string },
+  up: { sender: number; update_path: string; tree_hash_after: string; path_secrets: (string | null)[]; commit_secret: string },
+  nodeKey: (s: Uint8Array) => string,
+): boolean {
+  const sender = up.sender;
+  const path = F.readPath(new Buf(hex(up.update_path)));
+  const fdp = T.filteredDirectPath(base, sender, n);
+  if (fdp.length !== path.nodes.length) {
+    r.check("path shape", false, "filtered direct path is " + fdp.length + " nodes, path carries " + path.nodes.length);
+    return false;
+  }
+  const after = applyPath(base, n, sender, path);
+  r.equal("tree_hash_after", HS.treeHash(after, n), up.tree_hash_after);
+  r.check("leaf signature", ed25519.verify(path.leaf.signature, F.tbsLabel("LeafNodeTBS", F.leafTbs(path.leaf, hex(v.group_id), sender)), path.leaf.sigKey));
+  const secrets = (up.path_secrets as (string | null)[]).filter((x): x is string => typeof x === "string" && x.length > 0).map((x) => hex(x));
+  const keys = new Set(fdp.map((node) => Buffer.from((after[node] as { v: { enc: Uint8Array } }).v.enc).toString("hex")));
+  const next = new Set(secrets.map((s) => Buffer.from(S.deriveSecret(s, "path")).toString("hex")));
+  next.add(up.commit_secret);
+  checkUpdateSecrets(r, secrets, keys, next, nodeKey, up.commit_secret);
+  return true;
+}
+
 export async function treekem(r: Report): Promise<void> {
   const entries = await suite("treekem");
   let paths = 0;
@@ -483,54 +643,9 @@ export async function treekem(r: Report): Promise<void> {
     const n = countLeaves(raw);
     const base = pad(raw, n);
     const nodeKey = (secret: Uint8Array): string => Buffer.from(K.derivePair(S.deriveSecret(secret, "node")).pub).toString("hex");
-
-    for (const holder of v.leaves_private) {
-      for (const held of holder.path_secrets) {
-        const node = base[held.node];
-        if (!node || node.k === 0) {
-          r.check("held node " + held.node + " is populated", false);
-          continue;
-        }
-        r.check(
-          "held key at node " + held.node,
-          nodeKey(hex(held.path_secret)) === Buffer.from((node as any).v.enc).toString("hex"),
-          "DeriveKeyPair(DeriveSecret(secret, \"node\")) does not match the public key in the tree",
-        );
-      }
-    }
-
+    checkHeldKeys(r, base, v.leaves_private, nodeKey);
     for (const up of v.update_paths) {
-      const sender = up.sender;
-      const path = F.readPath(new Buf(hex(up.update_path)));
-      const fdp = T.filteredDirectPath(base, sender, n);
-      if (fdp.length !== path.nodes.length) {
-        r.check("path shape", false, "filtered direct path is " + fdp.length + " nodes, path carries " + path.nodes.length);
-        continue;
-      }
-      paths++;
-      const after = applyPath(base, n, sender, path);
-      r.equal("tree_hash_after", HS.treeHash(after, n), up.tree_hash_after);
-      r.check("leaf signature", ed25519.verify(path.leaf.signature, F.tbsLabel("LeafNodeTBS", F.leafTbs(path.leaf, hex(v.group_id), sender)), path.leaf.sigKey));
-
-      const secrets = (up.path_secrets as (string | null)[]).filter((x): x is string => typeof x === "string" && x.length > 0).map((x) => hex(x));
-      const keys = new Set(fdp.map((node) => Buffer.from((after[node] as any).v.enc).toString("hex")));
-      for (const secret of secrets) {
-        r.check("path secret yields a node key", keys.has(nodeKey(secret)), "no node on the filtered direct path has the matching public key");
-      }
-      const next = new Set(secrets.map((s) => Buffer.from(S.deriveSecret(s, "path")).toString("hex")));
-      next.add(up.commit_secret);
-      for (const secret of secrets) {
-        r.check(
-          "path secret continues the chain",
-          next.has(Buffer.from(S.deriveSecret(secret, "path")).toString("hex")),
-          "DeriveSecret(secret, \"path\") is neither another published path secret nor the commit secret",
-        );
-      }
-      r.check(
-        "commit secret ends the chain",
-        secrets.some((s) => Buffer.from(S.deriveSecret(s, "path")).equals(Buffer.from(hex(up.commit_secret)))),
-        "no published path secret derives the commit secret",
-      );
+      if (checkUpdatePath(r, base, n, v, up, nodeKey)) paths++;
     }
   }
   r.family("treekem", entries.length + " vectors, " + paths + " update paths");

@@ -8,13 +8,10 @@ function eq(a: Uint8Array, b: Uint8Array): boolean {
   return d === 0;
 }
 
-const fails: string[] = [];
-
 export function suiteSelfTest(id: number): { ok: boolean; label: string; fails: string[] } {
   const s = suiteOf(id);
   const hpke = makeHpke(id);
   const fails: string[] = [];
-
   const alice = hpke.keygen();
   const bob = hpke.keygen();
   if (alice.pub.length !== s.kem.dhLen) fails.push("kem public key is " + alice.pub.length + ", expected " + s.kem.dhLen);
@@ -49,6 +46,5 @@ export function suiteSelfTest(id: number): { ok: boolean; label: string; fails: 
   const wantNh = s.id === 2 ? 64 : 32;
   if (s.nh !== wantNh) fails.push("hash length is " + s.nh + ", expected " + wantNh);
 
-  void fails;
   return { ok: fails.length === 0, label: s.label, fails };
 }

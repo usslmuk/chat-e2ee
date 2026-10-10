@@ -29,13 +29,19 @@ const FALLBACK_ICE: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "
 let ICE: RTCIceServer[] = FALLBACK_ICE;
 const MAX_PEERS = 24;
 
+function iceUrls(urls: unknown): string[] {
+  if (Array.isArray(urls)) return urls.filter((u) => typeof u === "string");
+  if (typeof urls === "string") return [urls];
+  return [];
+}
+
 export function setIce(list: unknown): void {
   if (!Array.isArray(list)) return;
   const clean: RTCIceServer[] = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;
     const urls = (entry as { urls?: unknown }).urls;
-    const names = Array.isArray(urls) ? urls.filter((u) => typeof u === "string") : typeof urls === "string" ? [urls] : [];
+    const names = iceUrls(urls);
     if (names.length === 0) continue;
     const server: RTCIceServer = { urls: names };
     const user = (entry as { username?: unknown }).username;

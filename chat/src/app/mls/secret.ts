@@ -99,7 +99,7 @@ function record(e: Entry, walk: S.Ratchet): void {
 }
 
 export function forgetRatchets(room: string): void {
-  for (const k of [...tracks.keys()]) {
+  for (const k of tracks.keys()) {
     if (!k.startsWith(room + ":")) continue;
     const e = tracks.get(k);
     if (e) {

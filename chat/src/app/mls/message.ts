@@ -50,8 +50,7 @@ function guardNonce(ratchet: Uint8Array, guard: Uint8Array): Uint8Array {
   return out;
 }
 
-function xorNonce(ratchet: Uint8Array, key: Uint8Array, guard: Uint8Array): Uint8Array {
-  void key;
+function xorNonce(ratchet: Uint8Array, _key: Uint8Array, guard: Uint8Array): Uint8Array {
   return guardNonce(ratchet, guard);
 }
 

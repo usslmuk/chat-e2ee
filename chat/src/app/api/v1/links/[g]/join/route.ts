@@ -32,7 +32,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   update["$inc"] = { [C.grps.ep]: 1 };
   const res = await db.collection("grps").findOneAndUpdate(filter, update, { returnDocument: "after" });
   if (!res) return Response.json({ error: "full", cap: ROOM_CAP }, { status: 409 });
-  const now: string[] = Array.isArray(res[C.grps.mm]) ? res[C.grps.mm].map((x: unknown) => String(x)) : [];
+  const now: string[] = Array.isArray(res[C.grps.mm]) ? res[C.grps.mm].map(String) : [];
   tell(now, me.who, { type: "wake", link: g });
   return Response.json({
     ok: true,

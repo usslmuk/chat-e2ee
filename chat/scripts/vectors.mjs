@@ -1,7 +1,7 @@
 import { build } from "esbuild";
-import { rmSync } from "fs";
-import { join } from "path";
-import { spawnSync } from "child_process";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const out = join(process.cwd(), ".vectors", "run.mjs");
 rmSync(out, { force: true });

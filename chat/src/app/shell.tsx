@@ -532,7 +532,9 @@ export default function Shell() {
     if (Array.isArray(r.ice) && r.ice.length > 0) P2P.setIce(r.ice);
     turnOn = r.turn === true;
     iceAt = Date.now();
-  } catch (e) {}
+  } catch {
+    iceAt = 0;
+  }
 }
 
 const ICE_LIFE = 45 * 60 * 1000;
@@ -740,7 +742,7 @@ async function refreshPresence(s: Sess) {
 
   function withAtt(id: string, who: string, room: string, o: any, mine: boolean): Msg {
     const at = Number(o.d) || Date.now();
-    if (o.a && o.a.id) {
+    if (o.a?.id) {
       return { id, who, room, text: String(o.t || ""), mine, at, att: { id: String(o.a.id), name: String(o.a.n), mime: String(o.a.m), size: Number(o.a.s) } };
     }
     return { id, who, room, text: String(o.t || ""), mine, at };
@@ -758,31 +760,41 @@ async function refreshPresence(s: Sess) {
     setSess({ ...s });
   }
 
+  async function fetchPages(
+    token: string,
+    rooms: string[],
+    cursor: string | null = null,
+    page = 0,
+    acc: any[] = [],
+  ): Promise<{ rows: any[]; whole: boolean }> {
+    if (page >= 25) return { rows: acc, whole: false };
+    const r = await getMsgs(token, rooms, cursor);
+    const batch = r.msgs || [];
+    const rows = [...acc, ...batch];
+    const paged = Boolean(r.more && r.cursor && batch.length > 0);
+    if (!paged) return { rows, whole: r.full === true };
+    return fetchPages(token, rooms, r.cursor, page + 1, rows);
+  }
+
   async function pull() {
     return seq(async () => {
       const s = ref.current.sess;
       if (!s) return;
       const rooms = s.chans.map((c) => c.sid).filter((x) => x.length > 0);
       const rows: any[] = [];
-      let cursor: string | null = null;
-      let paged = true;
-      let whole = false;
-      for (let page = 0; page < 25 && paged; page++) {
-        const r = await getMsgs(s.token, rooms, cursor);
-        const batch = r.msgs || [];
-        rows.push(...batch);
-        paged = !!r.more && !!r.cursor && batch.length > 0;
-        cursor = r.cursor;
-        if (!paged) whole = r.full === true;
-      }
+      const pages = await fetchPages(s.token, rooms);
+      rows.push(...pages.rows);
+      const whole = pages.whole;
+      const seenIds = new Set(s.msgs.map((x) => x.id));
+      const candidates = rows.filter(
+        (row) => !seenIds.has(String(row.id)) && Number(row.bo) === 0 && W.memberCount(String(row.g)) > 0,
+      );
+      const opened = await Promise.all(candidates.map((row) => openBody(s, String(row.g), row)));
       let changed = false;
-      for (const row of rows) {
-        const g = String(row.g);
-        if (s.msgs.find((x) => x.id === String(row.id))) continue;
-        if (Number(row.bo) !== 0) continue;
-        if (W.memberCount(g) === 0) continue;
-        const o = await openBody(s, g, row);
+      for (const [i, row] of candidates.entries()) {
+        const o = opened[i];
         if (!o) continue;
+        const g = String(row.g);
         addMsg(s, withAtt(String(row.id), o.who, g, { t: o.text, d: o.at, a: o.att }, o.who === s.who));
         remember(String(row.id));
         changed = true;
@@ -1191,7 +1203,7 @@ async function refreshPresence(s: Sess) {
       await delMsg(s.token, id, g, stored);
       V.del("del." + id);
       const hit = s.msgs.find((m) => m.id === id);
-      if (hit && hit.att) dropBlob(hit.att.id);
+      if (hit?.att) dropBlob(hit.att.id);
       s.msgs = s.msgs.filter((m) => m.id !== id);
       setMarks((prev) => prev.filter((x) => x.mid !== id));
       setSess({ ...s });

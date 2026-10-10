@@ -1,6 +1,6 @@
 import { MongoClient, Db } from "mongodb";
 import { config } from "./env";
-import { createHmac } from "crypto";
+import { createHmac } from "node:crypto";
 import path from "path";
 import C from "../../../../fields.json";
 

@@ -21,8 +21,8 @@ export async function POST(req: Request) {
   const db = await getDb();
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad msg" }, { status: 400 });
-  const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad msg" }, { status: 400 });
+  const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map(String) : [];
+  if (!mm.includes(me.who)) return Response.json({ error: "bad msg" }, { status: 400 });
   if (b.exp !== undefined && b.exp !== null) return Response.json({ error: "bad msg" }, { status: 400 });
   const exp = new Date(Date.now() + env.blobTtlH * 3600 * 1000);
   try {
@@ -45,24 +45,64 @@ export async function POST(req: Request) {
   return Response.json({ ok: true });
 }
 
+function roomList(req: Request): string[] {
+  const q = new URL(req.url).searchParams;
+  return (q.get("g") || "").split(",").filter((x) => need(x, 64)).slice(0, 200);
+}
+
+function memberList(row: { [key: string]: unknown }): string[] {
+  const v = row[C.grps.mm];
+  return Array.isArray(v) ? v.map(String) : [];
+}
+
+async function allowedRooms(db: Awaited<ReturnType<typeof getDb>>, rooms: string[], who: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const g of rooms) {
+    const row = await db.collection("grps").findOne({ [C.grps.g]: g });
+    if (!row) continue;
+    if (memberList(row as { [key: string]: unknown }).includes(who)) out.push(g);
+  }
+  return out;
+}
+
+function capPage(page: { [key: string]: unknown }[]): { kept: { [key: string]: unknown }[]; capped: Set<string> } {
+  const perRoom: Record<string, number> = {};
+  const capped = new Set<string>();
+  const kept = page.filter((r) => {
+    const g = String(r[C.msgs.g]);
+    const n = (perRoom[g] || 0) + 1;
+    if (n > PER_ROOM) {
+      capped.add(g);
+      return false;
+    }
+    perRoom[g] = n;
+    return true;
+  });
+  return { kept, capped };
+}
+
+function msgView(r: { [key: string]: unknown }): { id: string; g: string; ct: string; sg: string; bo: number } {
+  return {
+    id: String(r[C.msgs.id]),
+    g: String(r[C.msgs.g]),
+    ct: String(r[C.msgs.ct]),
+    sg: String(r[C.msgs.sg]),
+    bo: Number(r[C.msgs.bo] || 0),
+  };
+}
+
 export async function GET(req: Request) {
   const slow = throttled(req);
   if (slow) return slow;
   const me = await authed(req);
   if (!me) return deny();
   const db = await getDb();
-  const q = new URL(req.url).searchParams;
-  const rooms = (q.get("g") || "").split(",").filter((x) => need(x, 64)).slice(0, 200);
+  const rooms = roomList(req);
   if (rooms.length === 0) return Response.json({ msgs: [], more: false });
-  const allowed: string[] = [];
-  for (const g of rooms) {
-    const row = await db.collection("grps").findOne({ [C.grps.g]: g });
-    if (!row) continue;
-    const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-    if (mm.indexOf(me.who) >= 0) allowed.push(g);
-  }
+  const allowed = await allowedRooms(db, rooms, me.who);
   if (allowed.length === 0) return Response.json({ msgs: [], more: false });
 
+  const q = new URL(req.url).searchParams;
   const before = q.get("before");
   const cursor = before && ObjectId.isValid(before) ? new ObjectId(before) : null;
   const rows = await db
@@ -74,38 +114,16 @@ export async function GET(req: Request) {
   const more = rows.length > PAGE;
   const page = rows.slice(0, PAGE);
 
-  const perRoom: Record<string, number> = {};
-  const capped = new Set<string>();
-  const kept = page.filter((r: { [key: string]: unknown }) => {
-    const g = String(r[C.msgs.g]);
-    const n = (perRoom[g] || 0) + 1;
-    if (n > PER_ROOM) {
-      capped.add(g);
-      return false;
-    }
-    perRoom[g] = n;
-    return true;
-  });
+  const { kept, capped } = capPage(page as { [key: string]: unknown }[]);
 
-  const keptDescending = kept;
-  const lastKept = keptDescending.length ? keptDescending[keptDescending.length - 1]._id : null;
+  const lastKept = kept.length ? kept[kept.length - 1]._id : null;
   const cursorOut = more && lastKept ? String(lastKept) : null;
-  const trimmed = capped.size > 0;
   return Response.json({
     more,
     cursor: cursorOut,
     full: capped.size === 0,
-    trimmed,
+    trimmed: capped.size > 0,
     trimmedRooms: [...capped].slice(0, 50),
-    msgs: keptDescending
-      .slice()
-      .reverse()
-      .map((r: { [key: string]: unknown }) => ({
-        id: String(r[C.msgs.id]),
-        g: String(r[C.msgs.g]),
-        ct: String(r[C.msgs.ct]),
-        sg: String(r[C.msgs.sg]),
-        bo: Number(r[C.msgs.bo] || 0)
-      }))
+    msgs: kept.slice().reverse().map(msgView),
   });
 }

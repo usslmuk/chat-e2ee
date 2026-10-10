@@ -42,7 +42,7 @@ export function optionsFromEnv(env: EnvMap = process.env): Record<string, string
   return out;
 }
 
-const LINE = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/mg;
+const LINE = /^[ \t]*(?:export[ \t]+)?([\w.-]+)[ \t]*(?:=[ \t]*|:[ \t]+)?([^\r\n]*)$/gm;
 
 const KEY_CHAR = new Uint8Array(256);
 for (let i = 48; i <= 57; i++) KEY_CHAR[i] = 1;
@@ -59,10 +59,26 @@ function parseRegex(src: string | Buffer): Record<string, string> {
   let m: RegExpExecArray | null;
   while ((m = LINE.exec(text)) != null) {
     const key = m[1];
-    let value = m[2] || "";
-    value = value.trim();
-    const q = value[0];
-    value = value.replace(/^(['"`])([\s\S]*)\1$/mg, "$2");
+    let value = (m[2] || "").trim();
+    const first = value[0];
+    if (first === "'" || first === '"' || first === "`") {
+      let close = -1;
+      for (let i = 1; i < value.length; i++) {
+        if (value[i] === "\\") {
+          i++;
+          continue;
+        }
+        if (value[i] === first) {
+          close = i;
+          break;
+        }
+      }
+      if (close !== -1) value = value.slice(1, close);
+    } else {
+      const hash = value.indexOf("#");
+      if (hash !== -1) value = value.slice(0, hash).trim();
+    }
+    const q = first;
     if (q === '"') {
       value = value.replace(/\\n/g, "\n");
       value = value.replace(/\\r/g, "\r");

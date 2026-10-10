@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 const SOURCE = "https://raw.githubusercontent.com/mlswg/mls-implementations/main/test-vectors";
 const CACHE = join(process.cwd(), ".vectors");
@@ -16,8 +16,8 @@ export async function load(name: string): Promise<any[]> {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
-export function suite(name: string, id = 1): any[] {
-  return load(name).then((all) => all.filter((x) => x.cipher_suite === undefined || x.cipher_suite === id));
+export async function suite(name: string, id = 1): Promise<any[]> {
+  return (await load(name)).filter((x) => x.cipher_suite === undefined || x.cipher_suite === id);
 }
 
 export const hex = (s: string): Uint8Array => {
@@ -36,7 +36,7 @@ export class Report {
   private pass = 0;
   private fail = 0;
   private lines: string[] = [];
-  private tally = new Map<string, number>();
+  private readonly tally = new Map<string, number>();
 
   check(what: string, ok: boolean, note = ""): boolean {
     if (ok) this.pass++;
