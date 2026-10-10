@@ -2,6 +2,23 @@ import C from "../../../fields.json";
 
 export { C };
 
+export type NetError = Error & { status: number; db: boolean };
+
+function netError(msg: string, status: number, db: boolean): NetError {
+  const e = new Error(msg) as NetError;
+  e.status = status;
+  e.db = db;
+  return e;
+}
+
+export function dberr(e: unknown): boolean {
+  return e instanceof Error && (e as NetError).db === true;
+}
+
+export function gone(e: unknown): boolean {
+  return e instanceof Error && (e as NetError).status === 404;
+}
+
 async function call(path: string, token: string, method: string, body?: unknown) {
   let r: Response;
   try {
@@ -11,8 +28,8 @@ async function call(path: string, token: string, method: string, body?: unknown)
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(20000)
     });
-  } catch (e) {
-    throw new Error("server unreachable") as Error & { status: number; db: boolean };
+  } catch {
+    throw netError("server unreachable", 0, true);
   }
   let j: any = null;
   try {
@@ -22,10 +39,7 @@ async function call(path: string, token: string, method: string, body?: unknown)
   }
   if (!r.ok) {
     const db = r.status >= 500;
-    const e = new Error(db ? "database unreachable" : String((j && j.error) || "net fail " + r.status)) as Error & { status: number; db: boolean };
-    e.status = r.status;
-    e.db = db;
-    throw e;
+    throw netError(db ? "database unreachable" : String((j && j.error) || "net fail " + r.status), r.status, db);
   }
   return j === null ? {} : j;
 }
@@ -170,9 +184,9 @@ export function delLink(token: string, g: string) {
 }
 
 export function delMsg(token: string, id: string, g: string, tok: string) {
-  const swapped = tok.indexOf("+") === -1 && tok.indexOf("/") === -1 ? tok : tok.split("+").join("-").split("/").join("_");
+  const swapped = tok.includes("+") || tok.includes("/") ? tok.split("+").join("-").split("/").join("_") : tok;
   let end = swapped.length;
-  while (end > 0 && swapped.charCodeAt(end - 1) === 61) end--;
+  while (end > 0 && (swapped.codePointAt(end - 1) ?? 0) === 61) end--;
   const u = end === swapped.length ? swapped : swapped.slice(0, end);
   return call("/api/v1/msgs/" + id + "?g=" + g + "&tok=" + u, token, "DELETE") as Promise<{ ok: boolean }>;
 }

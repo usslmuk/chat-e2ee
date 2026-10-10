@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad blob" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad blob" }, { status: 404 });
+  if (!mm.includes(me.who)) return Response.json({ error: "bad blob" }, { status: 404 });
 
   const size = Buffer.byteLength(String(b.data), "utf8");
   const used = await roomBytes(db, g);

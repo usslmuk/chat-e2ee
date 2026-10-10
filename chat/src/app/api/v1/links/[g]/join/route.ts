@@ -21,7 +21,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "no link" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) >= 0) return Response.json({ ok: true, mm });
+  if (mm.includes(me.who)) return Response.json({ ok: true, mm });
   const filter: Record<string, unknown> = {
     [C.grps.g]: g,
     [C.grps.mm]: { $ne: me.who },

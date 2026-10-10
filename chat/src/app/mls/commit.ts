@@ -231,7 +231,6 @@ export function applyGroupInfo(
 ): Group {
   const t = T.emptySlots(n);
   const priv = new Map<number, Uint8Array>();
-  const parents = new Map<number, T.Par>();
   let leafSlot = 0;
   for (let i = 0; i < info.nodes.length; i++) {
     const raw = info.nodes[i];
@@ -245,7 +244,6 @@ export function applyGroupInfo(
     } else {
       const p = F.readParentNode(nb);
       t[i] = { k: 2, v: { enc: p.enc, parentHash: p.parentHash, unmerged: p.unmerged } };
-      parents.set(i, { enc: p.enc, parentHash: p.parentHash, unmerged: p.unmerged });
     }
   }
   const me = leafIndexOf(t, self.sigPub);
@@ -336,6 +334,23 @@ export function refresh(g: Group, own: Uint8Array | null, held: X.Held[]): void 
   g.held = held;
 }
 
+function nodeEnc(nd: T.TNode): Uint8Array | null {
+  if (nd.k === 1) return (nd.v as T.Leaf).enc;
+  if (nd.k === 2) return (nd.v as T.Par).enc;
+  return null;
+}
+
+function slotOf(t: T.TNode[], live: number[], targetEnc: Uint8Array): number {
+  let slot = -1;
+  for (let k = 0; k < live.length; k++) {
+    const nd = t[live[k]];
+    if (nd.k === 0) continue;
+    const pk = nodeEnc(nd);
+    if (pk !== null && eq(pk, targetEnc)) slot = k;
+  }
+  return slot;
+}
+
 function sharesFor(
   t: T.TNode[],
   n: number,
@@ -347,19 +362,13 @@ function sharesFor(
 ): PathShare[] {
   const cp = T.copath(2 * committer, n);
   const out: PathShare[] = [];
+  const node = t[2 * target];
+  if (node.k === 0) return out;
+  const targetPk = nodeEnc(node);
+  if (targetPk === null || !eq(targetPk, targetEnc)) return out;
   for (let i = 0; i < fdp.length; i++) {
     const live = T.resolution(t, cp[i]);
-    const node = t[2 * target];
-    if (node.k === 0) continue;
-    const targetPk = node.k === 1 ? (node.v as T.Leaf).enc : (node.v as T.Par).enc;
-    if (!eq(targetPk, targetEnc)) continue;
-    let slot = -1;
-    for (let k = 0; k < live.length; k++) {
-      const nd = t[live[k]];
-      if (nd.k === 0) continue;
-      const pk = nd.k === 1 ? (nd.v as T.Leaf).enc : (nd.v as T.Par).enc;
-      if (eq(pk, targetEnc)) slot = live.indexOf(live[k]);
-    }
+    const slot = slotOf(t, live, targetEnc);
     if (slot < 0) continue;
     const slice = blobsAt(path.nodes[i].kemOutput, slot);
     if (slice) out.push({ node: fdp[i], kemOutput: slice.kemOutput, ciphertext: slice.ciphertext });
@@ -432,6 +441,91 @@ export type Remote = {
   shares: { node: number; kemOutput: Uint8Array; ciphertext: Uint8Array }[];
 };
 
+type ProposalEffect = { fresh: F.Leaf[]; removed: number; updated: number };
+
+function applyProposals(t: T.TNode[], proposals: F.Proposal[], sender: number, n: number): ProposalEffect {
+  const fresh: F.Leaf[] = [];
+  let removed = 0;
+  let updated = 0;
+  for (const pr of proposals) {
+    if (pr.t === F.ADD) {
+      fresh.push(leafFromPackage(pr.pkg));
+      continue;
+    }
+    if (pr.t === F.UPDATE) {
+      if (sender < 0 || sender >= n) throw new Error("update out of range");
+      t[2 * sender] = { k: 1, v: toTree(F.readLeafNodeBody(new Buf(pr.leaf))) };
+      updated++;
+      continue;
+    }
+    if (pr.t === F.REMOVE) {
+      if (pr.leaf < 0 || pr.leaf >= n) throw new Error("remove out of range");
+      t[2 * pr.leaf] = { k: 0 };
+      removed++;
+    }
+  }
+  return { fresh, removed, updated };
+}
+
+function appendLeaves(t: T.TNode[], fresh: F.Leaf[], n: number): number {
+  let at = n;
+  for (const l of fresh) {
+    while (t.length < T.alloc(n + 1)) t.push({ k: 0 });
+    t[2 * at] = { k: 1, v: toTree(l) };
+    at++;
+  }
+  return n + fresh.length;
+}
+
+function repack(t: T.TNode[], n: number): number {
+  const packed = T.emptySlots(n);
+  let slot = 0;
+  for (let i = 0; i < n; i++) {
+    if (t[2 * i] && t[2 * i].k === 1) {
+      packed[2 * slot] = t[2 * i];
+      slot++;
+    }
+  }
+  for (let i = 0; i < packed.length; i++) if (!packed[i]) packed[i] = { k: 0 };
+  t.length = 0;
+  for (const nd of packed) t.push(nd);
+  return slot;
+}
+
+function installPath(t: T.TNode[], path: F.UpdatePath | null, sender: number, n: number): void {
+  if (!path) return;
+  const fdp = T.filteredDirectPath(t, sender, n);
+  for (const node of T.directPath(2 * sender, n)) t[node] = { k: 0 };
+  const encs: Uint8Array[] = [];
+  for (let i = 0; i < fdp.length; i++) {
+    const enc = path.nodes[i] ? path.nodes[i].enc : new Uint8Array(32);
+    encs.push(enc);
+    t[fdp[i]] = { k: 2, v: { enc, parentHash: EMPTY, unmerged: [] } };
+  }
+  const chain = parentHashChain(t, fdp, encs, sender);
+  for (let i = 0; i < fdp.length; i++) {
+    const nd = t[fdp[i]];
+    if (nd.k === 2) nd.v.parentHash = chain.stored[i];
+  }
+  t[2 * sender] = { k: 1, v: toTree(path.leaf) };
+}
+
+function ownPathSecret(priv: Uint8Array | undefined, shares: { node: number; kemOutput: Uint8Array; ciphertext: Uint8Array }[] | undefined, label: Uint8Array): X.Held[] {
+  const held: X.Held[] = [];
+  if (!priv || !shares) return held;
+  for (const sh of shares) {
+    try {
+      const sk = K.decap(priv, sh.kemOutput);
+      const c = K.keySchedule(sk, label);
+      const secret = K.openC(c, label, sh.ciphertext);
+      sk.fill(0);
+      held.push({ node: sh.node, pathSecret: secret });
+      break;
+    } catch (e) {}
+  }
+  return held;
+}
+
 export function applyRemote(g: Group, wire: Remote): Group {
   const fr = F.readFramed(new Buf(wire.content));
   if (!eq(fr.groupId, g.id)) throw new Error("wrong group id");
@@ -455,82 +549,19 @@ export function applyRemote(g: Group, wire: Remote): Group {
 
   const ext = g.extensions;
   const t = clone(g.t);
-  let n = g.n;
-  const fresh: F.Leaf[] = [];
-  let removed = 0;
-  let updated = 0;
-  for (const pr of proposals) {
-    if (pr.t === F.ADD) fresh.push(leafFromPackage(pr.pkg));
-    else if (pr.t === F.UPDATE) {
-      if (fr.sender < 0 || fr.sender >= n) throw new Error("update out of range");
-      t[2 * fr.sender] = { k: 1, v: toTree(F.readLeafNodeBody(new Buf(pr.leaf))) };
-      updated++;
-    } else if (pr.t === F.REMOVE) {
-      if (pr.leaf < 0 || pr.leaf >= n) throw new Error("remove out of range");
-      t[2 * pr.leaf] = { k: 0 };
-      removed++;
-    }
-  }
-
-  let at = g.n;
-  for (const l of fresh) {
-    while (t.length < T.alloc(n + 1)) t.push({ k: 0 });
-    t[2 * at] = { k: 1, v: toTree(l) };
-    at++;
-  }
-  n += fresh.length;
-  if (removed > 0) {
-    const packed = T.emptySlots(n);
-    let slot = 0;
-    for (let i = 0; i < n; i++) {
-      if (t[2 * i] && t[2 * i].k === 1) {
-        packed[2 * slot] = t[2 * i];
-        slot++;
-      }
-    }
-    for (let i = 0; i < packed.length; i++) if (!packed[i]) packed[i] = { k: 0 };
-    t.length = 0;
-    for (const nd of packed) t.push(nd);
-    n = slot;
-  }
-
-  const encs: Uint8Array[] = [];
-  if (path) {
-    const fdp = T.filteredDirectPath(t, fr.sender, n);
-    for (const node of T.directPath(2 * fr.sender, n)) t[node] = { k: 0 };
-    for (let i = 0; i < fdp.length; i++) {
-      const enc = path.nodes[i] ? path.nodes[i].enc : new Uint8Array(32);
-      encs.push(enc);
-      t[fdp[i]] = { k: 2, v: { enc, parentHash: EMPTY, unmerged: [] } };
-    }
-    const chain = parentHashChain(t, fdp, encs, fr.sender);
-    for (let i = 0; i < fdp.length; i++) {
-      const nd = t[fdp[i]];
-      if (nd.k === 2) nd.v.parentHash = chain.stored[i];
-    }
-    t[2 * fr.sender] = { k: 1, v: toTree(path.leaf) };
-  }
+  const n0 = g.n;
+  const effect = applyProposals(t, proposals, fr.sender, n0);
+  let n = appendLeaves(t, effect.fresh, n0);
+  if (effect.removed > 0) n = repack(t, n);
+  installPath(t, path, fr.sender, n);
 
   const ctx = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, ext);
   const confirmed = F.nextConfirmed(g.interim, F.WIRE_PUBLIC, wire.content, wire.signature);
   const secrets = S.epochFromJoiner(wire.joiner, ctx);
   const tag = S.confirmationTag(secrets.confirm, confirmed);
 
-  const held: X.Held[] = [];
   const label = F.tbsLabel("UpdatePathNode", ctx);
-  const priv = g.priv.get(2 * g.me);
-  if (priv && wire.shares) {
-    for (const sh of wire.shares) {
-      try {
-        const sk = K.decap(priv, sh.kemOutput);
-        const c = K.keySchedule(sk, label);
-        const secret = K.openC(c, label, sh.ciphertext);
-        sk.fill(0);
-        held.push({ node: sh.node, pathSecret: secret });
-        break;
-      } catch (e) {}
-    }
-  }
+  const held = ownPathSecret(g.priv.get(2 * g.me), wire.shares, label);
 
   const privNext = new Map(g.priv);
   const next: Group = {
@@ -549,6 +580,32 @@ export function applyRemote(g: Group, wire: Remote): Group {
   };
   refresh(next, null, held);
   return next;
+}
+
+function welcomeEntryFor(adds: Uint8Array[], i: number, g: Group, p: Prepared, joinerSecret: Uint8Array, infoBytes: Uint8Array): WelcomeEntry {
+  const pkgLeaf = leafFromPackage(adds[i]);
+  const ref = F.keyPackageRef(adds[i]);
+  const target = g.n + i;
+  const ownPath = T.filteredDirectPath(p.t, target, p.n);
+  const chain = X.pathChain(K.fresh(), ownPath.length);
+  const e = K.encap(pkgLeaf.enc);
+  const pw = new Writer().vec(joinerSecret);
+  for (const sec of chain) pw.vec(sec);
+  const payload = pw.out();
+  const label = F.tbsLabel("Welcome", infoBytes);
+  const c = K.keySchedule(e.shared, label);
+  const ciphertext = K.seal(c, label, payload);
+  e.shared.fill(0);
+  const path = sharesFor(p.t, p.n, g.me, target, p.fdp, p.path, pkgLeaf.enc);
+  return { ref, enc: { kemOutput: e.kemOutput, ciphertext }, path };
+}
+
+function buildWelcome(adds: Uint8Array[], g: Group, p: Prepared, next: Group, joinerSecret: Uint8Array): Welcome | null {
+  if (adds.length === 0) return null;
+  const entries: WelcomeEntry[] = [];
+  const infoBytes = writeGroupInfo(next);
+  for (let i = 0; i < adds.length; i++) entries.push(welcomeEntryFor(adds, i, g, p, joinerSecret, infoBytes));
+  return { info: groupInfoOf(next), entries };
 }
 
 export function commit(g: Group, adds: Uint8Array[], removes: number[], opts: CommitOpts = {}): CommitOut {
@@ -591,31 +648,16 @@ export function commit(g: Group, adds: Uint8Array[], removes: number[], opts: Co
   };
   refresh(next, null, p.held);
 
-  let welcome: Welcome | null = null;
-  if (adds.length > 0) {
-    const entries: WelcomeEntry[] = [];
-    const newInfo: GroupInfo = groupInfoOf(next);
-    const infoBytes = writeGroupInfo(next);
-    for (let i = 0; i < adds.length; i++) {
-      const pkgLeaf = leafFromPackage(adds[i]);
-      const ref = F.keyPackageRef(adds[i]);
-      const target = g.n + i;
-      const ownPath = T.filteredDirectPath(p.t, target, p.n);
-      const chain = X.pathChain(K.fresh(), ownPath.length);
-      const e = K.encap(pkgLeaf.enc);
-      const pw = new Writer().vec(joinerSecret);
-      for (const sec of chain) pw.vec(sec);
-      const payload = pw.out();
-      const c = K.keySchedule(e.shared, F.tbsLabel("Welcome", infoBytes));
-      const ciphertext = K.seal(c, F.tbsLabel("Welcome", infoBytes), payload);
-      e.shared.fill(0);
-      const path = sharesFor(p.t, p.n, g.me, target, p.fdp, p.path, pkgLeaf.enc);
-      entries.push({ ref, enc: { kemOutput: e.kemOutput, ciphertext }, path });
-    }
-    welcome = { info: newInfo, entries };
-  }
-
-  return { content, signature, confirmationTag: tag, group: next, welcome, pathShares: p.out, joiner: joinerSecret, committer: g.me };
+  return {
+    content,
+    signature,
+    confirmationTag: tag,
+    group: next,
+    welcome: buildWelcome(adds, g, p, next, joinerSecret),
+    pathShares: p.out,
+    joiner: joinerSecret,
+    committer: g.me
+  };
 }
 
 export type Joined = {
@@ -721,12 +763,16 @@ export type Prepared = {
   rotatedSelf: Self | null;
 };
 
-export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: CommitOpts = {}): Prepared {
-  const t = clone(g.t);
-  const updatedPriv = new Map<number, Uint8Array>();
+function stageProposals(
+  t: T.TNode[],
+  g: Group,
+  opts: CommitOpts,
+  signer: Self,
+  removes: number[],
+  adds: Uint8Array[],
+): { proposals: F.Proposal[]; updatedPriv: Map<number, Uint8Array>; fresh: F.Leaf[] } {
   const proposals: F.Proposal[] = [];
-  const rotatedSelf: Self | null = opts.rotateSelf ? makeSelf() : null;
-  const signer: Self = rotatedSelf ?? g.self;
+  const updatedPriv = new Map<number, Uint8Array>();
   for (const l of removes) {
     if (l < 0 || l >= g.n) throw new Error("leaf out of range");
     t[2 * l] = { k: 0 };
@@ -734,44 +780,92 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
   }
   for (const l of opts.updates ?? []) {
     if (l < 0 || l >= g.n) throw new Error("leaf out of range");
-    const old = t[2 * l];
-    if (old.k !== 1) throw new Error("update of a blank leaf");
+    if (t[2 * l].k !== 1) throw new Error("update of a blank leaf");
     const fresh = K.keygen();
     updatedPriv.set(2 * l, fresh.priv);
     const node = signLeaf(signer, { enc: fresh.pub, sigKey: signer.sigPub, cred: signer.sigPub, source: F.SRC_UPDATE, parentHash: null, tbs: EMPTY, signature: EMPTY }, g.id, l);
     t[2 * l] = { k: 1, v: toTree(node) };
     proposals.push({ t: F.UPDATE, leaf: F.writeLeafNodeBody(node) });
   }
-  const pskIds = (opts.psks ?? []).map((p) => writePskId({ t: P.PSK_EXTERNAL, id: p.id, nonce: p.nonce ?? P.freshNonce() }));
-  for (const id of pskIds) proposals.push({ t: F.PSK, psk: id });
+  for (const p of opts.psks ?? []) {
+    proposals.push({ t: F.PSK, psk: writePskId({ t: P.PSK_EXTERNAL, id: p.id, nonce: p.nonce ?? P.freshNonce() }) });
+  }
   const fresh: F.Leaf[] = [];
   for (const pkg of adds) {
     fresh.push(leafFromPackage(pkg));
     proposals.push({ t: F.ADD, pkg });
   }
-  const n = g.n + fresh.length;
+  return { proposals, updatedPriv, fresh };
+}
+
+function stageLeaves(t: T.TNode[], fresh: F.Leaf[], from: number): number {
+  const n = from + fresh.length;
   while (t.length < T.alloc(n)) t.push({ k: 0 });
-  let at = g.n;
+  let at = from;
   for (const l of fresh) {
     t[2 * at] = { k: 1, v: toTree(l) };
     at++;
   }
-  const leafSecret = K.fresh();
-  const fdp = T.filteredDirectPath(t, g.me, n);
-  const chain = X.pathChain(leafSecret, fdp.length + 1);
-  const cp = T.copath(2 * g.me, n);
+  return n;
+}
+
+function stageParents(t: T.TNode[], fdp: number[], chain: Uint8Array[]): { encs: Uint8Array[]; held: X.Held[] } {
   const encs: Uint8Array[] = [];
   const held: X.Held[] = [];
-  const seals: Uint8Array[] = [];
-  const ctx = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, writeExtensions(opts.extensions ?? []));
   for (let i = 0; i < fdp.length; i++) {
     const ps = chain[i + 1];
     const pair = K.derivePair(X.nodeSecret(ps));
     encs.push(pair.pub);
     t[fdp[i]] = { k: 2, v: { enc: pair.pub, parentHash: EMPTY, unmerged: [] } };
     held.push({ node: fdp[i], pathSecret: ps });
-    seals.push(new Uint8Array(0));
   }
+  return { encs, held };
+}
+
+function sealToLeaves(t: T.TNode[], fdp: number[], cp: number[], chain: Uint8Array[], label: Uint8Array, n: number, me: number): { out: OutShare[]; seals: Uint8Array[] } {
+  const out: OutShare[] = [];
+  const seals: Uint8Array[] = [];
+  for (let i = 0; i < fdp.length; i++) {
+    const ps = chain[i + 1];
+    const bw = new Writer();
+    for (const r of T.resolution(t, cp[i])) {
+      const nd = t[r];
+      if (nd.k === 0) continue;
+      if (holdsKey(t, n, me, r)) continue;
+      const pk = nodeEnc(nd);
+      if (pk === null) continue;
+      const e = K.encap(pk);
+      const c = K.keySchedule(e.shared, label);
+      const ct = K.seal(c, label, ps);
+      bw.vec(new Writer().vec(e.kemOutput).vec(ct).out());
+      for (let who = 0; who < n; who++) {
+        const wn = t[2 * who];
+        if (wn.k === 0) continue;
+        const wpk = nodeEnc(wn);
+        if (wpk !== null && eq(wpk, pk)) out.push({ forLeaf: who, node: fdp[i], kemOutput: e.kemOutput, ciphertext: ct });
+      }
+      e.shared.fill(0);
+    }
+    seals[i] = bw.out();
+  }
+  return { out, seals };
+}
+
+export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: CommitOpts = {}): Prepared {
+  const t = clone(g.t);
+  const rotatedSelf: Self | null = opts.rotateSelf ? makeSelf() : null;
+  const signer: Self = rotatedSelf ?? g.self;
+  const staged = stageProposals(t, g, opts, signer, removes, adds);
+  const proposals = staged.proposals;
+  const updatedPriv = staged.updatedPriv;
+  const n = stageLeaves(t, staged.fresh, g.n);
+  const leafSecret = K.fresh();
+  const fdp = T.filteredDirectPath(t, g.me, n);
+  const chain = X.pathChain(leafSecret, fdp.length + 1);
+  const cp = T.copath(2 * g.me, n);
+  const parents = stageParents(t, fdp, chain);
+  const encs = parents.encs;
+  const held = parents.held;
   const phs = parentHashChain(t, fdp, encs, g.me);
   const leafPair = K.derivePair(X.nodeSecret(chain[0]));
   const leaf = signLeaf(
@@ -786,29 +880,9 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
   t[2 * g.me] = { k: 1, v: toTree(leaf) };
   const provisional = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, writeExtensions(opts.extensions ?? []));
   const label = F.tbsLabel("UpdatePathNode", provisional);
-  const out: OutShare[] = [];
-  for (let i = 0; i < fdp.length; i++) {
-    const ps = chain[i + 1];
-    const bw = new Writer();
-    for (const r of T.resolution(t, cp[i])) {
-      const nd = t[r];
-      if (nd.k === 0) continue;
-      if (holdsKey(t, n, g.me, r)) continue;
-      const pk = nd.k === 1 ? (nd.v as T.Leaf).enc : (nd.v as T.Par).enc;
-      const e = K.encap(pk);
-      const c = K.keySchedule(e.shared, label);
-      const ct = K.seal(c, label, ps);
-      bw.vec(new Writer().vec(e.kemOutput).vec(ct).out());
-      for (let who = 0; who < n; who++) {
-        const wn = t[2 * who];
-        if (wn.k === 0) continue;
-        const wpk = wn.k === 1 ? (wn.v as T.Leaf).enc : (wn.v as T.Par).enc;
-        if (eq(wpk, pk)) out.push({ forLeaf: who, node: fdp[i], kemOutput: e.kemOutput, ciphertext: ct });
-      }
-      e.shared.fill(0);
-    }
-    seals[i] = bw.out();
-  }
+  const sealed = sealToLeaves(t, fdp, cp, chain, label, n, g.me);
+  const out = sealed.out;
+  const seals = sealed.seals;
   const nodes: F.PathNode[] = [];
   for (let i = 0; i < fdp.length; i++) nodes.push({ enc: encs[i], kemOutput: seals[i] });
   return { path: { leaf, nodes }, proposals, t, n, ctx: provisional, leafSecret, held, priv: updatedPriv, fdp, out, rotatedSelf };

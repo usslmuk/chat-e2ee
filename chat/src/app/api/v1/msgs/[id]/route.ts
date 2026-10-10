@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { getDb } from "../../../lib/db";
 import { authed, deny, member, need, throttled } from "../../../lib/auth";
 import { tell } from "../../../lib/push";

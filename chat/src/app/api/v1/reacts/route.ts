@@ -16,7 +16,7 @@ export async function POST(req: Request) {
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad react" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad react" }, { status: 404 });
+  if (!mm.includes(me.who)) return Response.json({ error: "bad react" }, { status: 404 });
   await db.collection("reac").insertOne({
     [C.reac.id]: String(b.id),
     [C.reac.g]: g,
@@ -38,7 +38,7 @@ export async function GET(req: Request) {
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad react" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad react" }, { status: 404 });
+  if (!mm.includes(me.who)) return Response.json({ error: "bad react" }, { status: 404 });
   const rows = await db.collection("reac").find({ [C.reac.g]: g }).sort({ [C.reac.id]: 1 }).limit(500).toArray();
   return Response.json({
     reacts: rows.map((r) => ({ id: String(r[C.reac.id]), ct: String(r[C.reac.ct]), sg: String(r[C.reac.sg]) }))
@@ -57,7 +57,7 @@ export async function DELETE(req: Request) {
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad react" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad react" }, { status: 404 });
+  if (!mm.includes(me.who)) return Response.json({ error: "bad react" }, { status: 404 });
   const hit = await db.collection("reac").findOne({ [C.reac.id]: id, [C.reac.g]: g });
   if (!hit) return Response.json({ ok: true });
   await db.collection("reac").deleteOne({ [C.reac.id]: id, [C.reac.g]: g });

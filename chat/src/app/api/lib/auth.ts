@@ -1,4 +1,4 @@
-import { randomBytes, createHash, timingSafeEqual } from "crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { getDb, env } from "./db";
 import { limited, ipOf } from "./limit";
 import C from "../../../../fields.json";
@@ -76,7 +76,7 @@ export async function member(who: string, g: string) {
   const row = await (await getDb()).collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return null;
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(who) < 0) return null;
+  if (!mm.includes(who)) return null;
   return { row, mm };
 }
 

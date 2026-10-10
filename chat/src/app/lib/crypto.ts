@@ -24,14 +24,14 @@ const enc = new TextEncoder();
 
 export function b64e(v: Uint8Array): string {
   let s = "";
-  for (let i = 0; i < v.length; i += 8192) s += String.fromCharCode(...v.subarray(i, i + 8192));
+  for (let i = 0; i < v.length; i += 8192) s += String.fromCodePoint(...v.subarray(i, i + 8192));
   return btoa(s);
 }
 
 export function b64d(s: string): Uint8Array {
   const b = atob(s);
   const v = new Uint8Array(b.length);
-  for (let i = 0; i < b.length; i++) v[i] = b.charCodeAt(i);
+  for (let i = 0; i < b.length; i++) v[i] = b.codePointAt(i) ?? 0;
   return v;
 }
 
@@ -63,7 +63,7 @@ function hkdfExpand(prk: Uint8Array, info: Uint8Array, len: number): Uint8Array 
 export function ctId(ct: string): string {
   const h = sha256(enc.encode(ct));
   let s = "";
-  for (let i = 0; i < 15; i++) s += String.fromCharCode(h[i]);
+  for (let i = 0; i < 15; i++) s += String.fromCodePoint(h[i]);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_");
 }
 

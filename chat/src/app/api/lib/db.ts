@@ -1,7 +1,7 @@
 import { MongoClient, Db } from "mongodb";
 import { config } from "./env";
 import { createHmac } from "node:crypto";
-import path from "path";
+import path from "node:path";
 import C from "../../../../fields.json";
 
 const g = globalThis as Record<string, unknown>;

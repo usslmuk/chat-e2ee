@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     const row = await db.collection("grps").findOne({ [C.grps.g]: g });
     if (!row) return null;
     const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-    return mm.indexOf(me.who) >= 0;
+    return mm.includes(me.who);
   })();
   if (!found) return Response.json({ error: "no link" }, { status: 404 });
   const code = hex(12);

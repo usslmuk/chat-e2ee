@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Prando from "prando";
 import { Check, Copy, Download, FileText, Plus, Smile, Trash2, X as CloseIcon } from "lucide-react";
-import { bundle, delLink, delMsg, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, ice, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
+import { bundle, delLink, delMsg, dberr, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, gone, ice, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
 
 import { stamp } from "./lib/time";
 import { b64d, b64e, ctId, delCommitment, genKeys, safety } from "./lib/crypto";
@@ -311,14 +311,6 @@ export default function Shell() {
     };
   }, []);
 
-  function dberr(e: unknown) {
-    return e instanceof Error && (e as Error & { db?: boolean }).db === true;
-  }
-
-  function gone(e: unknown) {
-    return e instanceof Error && (e as Error & { status?: number }).status === 404;
-  }
-
   function seq<T>(f: () => Promise<T>): Promise<T> {
     const r = gate.current.then(f);
     gate.current = r.then(() => undefined, () => undefined);
@@ -567,7 +559,7 @@ async function refreshPresence(s: Sess) {
     else if (o.type === "bye") signal(s.token, g, "bye", null).catch(() => {});
   }
 
-  async function ping(on: boolean) {
+  function ping(on: boolean) {
     const s = ref.current.sess;
     const l = ref.current.room;
     if (!s || !l) return;
@@ -581,7 +573,7 @@ async function refreshPresence(s: Sess) {
 
   function onType(v: string) {
     setText(v);
-    void ping(v.length > 0);
+    ping(v.length > 0);
   }
 
   async function peerOf(s: Sess, who: string) {
@@ -645,36 +637,36 @@ async function refreshPresence(s: Sess) {
     if (n > 0) setSess({ ...s });
   }
 
-  async function growGroup(s: Sess, g: string, mm: string[]) {
-    if (mm[0] === s.who) {
-      if (W.memberCount(g) === 0) return;
-      if (!W.load(g)) throw new Error("founder has no group");
-      let cur = W.load(g);
-      if (!cur) return;
-      let moved = false;
-      for (const who of mm) {
-        if (who === s.who) continue;
-        const pb = s.pbs[who];
-        if (!pb || pb.kp.length === 0) continue;
-        if (X.leafOf(cur, pb.sig) >= 0) continue;
-        const out = W.addMembers(g, pb.kp);
-        W.saveGroup(g, out.group);
-        W.forgetRatchets(g);
-        cur = out.group;
-        moved = true;
-        if (out.welcome) await putWelcome(s.token, g, who, JSON.stringify(X.packWelcome(out.welcome)));
-      }
-      if (moved) {
-        await putGroupInfo(s.token, g, W.groupInfoOf(g));
-        const pub = W.publishCommit(g);
-        if (pub) {
-          await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
-          if (W.rotationDue(g, ROTATE_DAYS)) void announce(s);
-        }
-      }
-      await catchUp(s, g);
-      return;
+  async function growAsFounder(s: Sess, g: string, mm: string[]): Promise<void> {
+    if (W.memberCount(g) === 0) return;
+    if (!W.load(g)) throw new Error("founder has no group");
+    let cur = W.load(g);
+    if (!cur) return;
+    let moved = false;
+    for (const who of mm) {
+      if (who === s.who) continue;
+      const pb = s.pbs[who];
+      if (!pb || pb.kp.length === 0) continue;
+      if (X.leafOf(cur, pb.sig) >= 0) continue;
+      const out = W.addMembers(g, pb.kp);
+      W.saveGroup(g, out.group);
+      W.forgetRatchets(g);
+      cur = out.group;
+      moved = true;
+      if (out.welcome) await putWelcome(s.token, g, who, JSON.stringify(X.packWelcome(out.welcome)));
     }
+    if (moved) {
+      await putGroupInfo(s.token, g, W.groupInfoOf(g));
+      const pub = W.publishCommit(g);
+      if (pub) {
+        await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
+        if (W.rotationDue(g, ROTATE_DAYS)) void announce(s);
+      }
+    }
+    await catchUp(s, g);
+  }
+
+  async function growAsGuest(s: Sess, g: string): Promise<void> {
     if (W.memberCount(g) > 0) {
       await dropWelcome(s.token, g).catch(() => {});
       return;
@@ -694,6 +686,14 @@ async function refreshPresence(s: Sess) {
     await dropWelcome(s.token, g).catch(() => {});
     await catchUp(s, g);
     setSess({ ...s });
+  }
+
+  async function growGroup(s: Sess, g: string, mm: string[]) {
+    if (mm[0] === s.who) {
+      await growAsFounder(s, g, mm);
+      return;
+    }
+    await growAsGuest(s, g);
   }
 
   async function tick() {
@@ -719,18 +719,7 @@ async function refreshPresence(s: Sess) {
           if (gone(e)) dead = rooms[i];
         }
       }
-      if (dead && dead === cur) {
-        dropRoom(dead, s.msgs);
-        s.msgs = s.msgs.filter((m) => m.room !== dead);
-        s.chans = s.chans.filter((c) => c.sid !== dead);
-        selRef.current = "";
-        setSel("");
-        setRoom("");
-        setLink("");
-        setErr("link is gone");
-        setView("home");
-        window.history.replaceState(null, "", "/");
-      }
+      forgetRoom(dead, cur, s);
       sweepTypers();
       await pull();
       await refreshPresence(s);
@@ -738,6 +727,20 @@ async function refreshPresence(s: Sess) {
     } finally {
       busy.current = false;
     }
+  }
+
+  function forgetRoom(dead: string, cur: string, s: Sess): void {
+    if (!dead || dead !== cur) return;
+    dropRoom(dead, s.msgs);
+    s.msgs = s.msgs.filter((m) => m.room !== dead);
+    s.chans = s.chans.filter((c) => c.sid !== dead);
+    selRef.current = "";
+    setSel("");
+    setRoom("");
+    setLink("");
+    setErr("link is gone");
+    setView("home");
+    window.history.replaceState(null, "", "/");
   }
 
   function withAtt(id: string, who: string, room: string, o: any, mine: boolean): Msg {
@@ -789,7 +792,7 @@ async function refreshPresence(s: Sess) {
       const candidates = rows.filter(
         (row) => !seenIds.has(String(row.id)) && Number(row.bo) === 0 && W.memberCount(String(row.g)) > 0,
       );
-      const opened = await Promise.all(candidates.map((row) => openBody(s, String(row.g), row)));
+      const opened = candidates.map((row) => openBody(s, String(row.g), row));
       let changed = false;
       for (const [i, row] of candidates.entries()) {
         const o = opened[i];
@@ -966,7 +969,7 @@ async function refreshPresence(s: Sess) {
     goLive();
   }
 
-  async function openBody(s: Sess, g: string, row: any): Promise<{ who: string; text: string; at: number; att?: Att } | null> {
+  function openBody(s: Sess, g: string, row: any): { who: string; text: string; at: number; att?: Att } | null {
     const ct = String(row.ct || "");
     if (!ct) return null;
     const opened = W.open(g, ct);
@@ -1040,7 +1043,7 @@ async function refreshPresence(s: Sess) {
       await sendFile(f, caption);
       return;
     }
-    return seq(async () => {
+    await seq(async () => {
       const s = ref.current.sess;
       const ch = activeCh(s);
       if (!s || !ch || !text) return;
@@ -1057,16 +1060,12 @@ async function refreshPresence(s: Sess) {
         remember(id);
         setSess({ ...s });
         setText("");
-        void ping(false);
+        ping(false);
       } catch (e) {
-        setErr(dberr(e) ? "database unreachable" : e instanceof Error ? e.message : "send failed");
+        setErr(sendFail(e));
       }
-    }).then(
-      () => {
-        pull().catch(() => {});
-      },
-      () => {}
-    );
+    });
+    await pull().catch(() => {});
   }
 
   async function post(s: Sess, ch: Chan, o: { w: string; t: string; d: number; a?: Att }): Promise<string> {
@@ -1081,7 +1080,7 @@ async function refreshPresence(s: Sess) {
   }
 
   async function sendFile(f: File, caption: string) {
-    return seq(async () => {
+    await seq(async () => {
       const s = ref.current.sess;
       const ch = activeCh(s);
       if (!s || !ch) return;
@@ -1106,16 +1105,12 @@ async function refreshPresence(s: Sess) {
         setSess({ ...s });
         setText("");
         setPending(null);
-        void ping(false);
+        ping(false);
       } catch (e) {
-        setErr(dberr(e) ? "database unreachable" : e instanceof Error ? e.message : "send failed");
+        setErr(sendFail(e));
       }
-    }).then(
-      () => {
-        pull().catch(() => {});
-      },
-      () => {}
-    );
+    });
+    await pull().catch(() => {});
   }
 
   function keys(e: React.KeyboardEvent) {
@@ -1170,7 +1165,7 @@ async function refreshPresence(s: Sess) {
     }
   }
 
-  async function pickFile() {
+  function pickFile() {
     const s = ref.current.sess;
     const ch = activeCh(s);
     if (!s || !ch) return;
@@ -1181,7 +1176,7 @@ async function refreshPresence(s: Sess) {
     fileRef.current?.click();
   }
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files ? e.target.files[0] : null;
     e.target.value = "";
     if (!f) return;
@@ -1214,7 +1209,7 @@ async function refreshPresence(s: Sess) {
       setMarks((prev) => prev.filter((x) => x.mid !== id));
       setSess({ ...s });
     } catch (e) {
-      setErr(dberr(e) ? "database unreachable" : e instanceof Error && (e as Error & { status?: number }).status === 403 ? "you can only delete your own" : "delete failed");
+      setErr(deleteFail(e));
     }
   }
 
@@ -1289,13 +1284,38 @@ async function refreshPresence(s: Sess) {
   const others = ch ? ch.members.filter((x) => x !== who) : [];
   const ready = !!ch && W.memberCount(ch.sid) >= others.length && W.memberCount(ch.sid) > 0;
   const full = !!ch && ch.members.length >= 2;
-  const iAmLive = liveNow.indexOf(who) >= 0;
+  const iAmLive = liveNow.includes(who);
   const whoLabel = (id: string) => (id === who ? "you" : short(id));
 
-  const isOn = (id: string) => (id === who ? iAmLive : liveNow.indexOf(id) >= 0);
+  function typingLine(names: string[]): string {
+    if (names.length === 0) return "";
+    if (names.length === 1) return names[0] + " is typing";
+    if (names.length === 2) return names[0] + " and " + names[1] + " are typing";
+    return names.slice(0, 2).join(", ") + " and " + (names.length - 2) + " more are typing";
+  }
+
+  function presenceText(up: boolean, keyOk: boolean): string {
+    if (!up) return "offline";
+    return keyOk ? "online, key known" : "online";
+  }
+
+  function sendFail(e: unknown): string {
+    if (dberr(e)) return "database unreachable";
+    return e instanceof Error ? e.message : "send failed";
+  }
+
+  function deleteFail(e: unknown): string {
+    if (dberr(e)) return "database unreachable";
+    if (e instanceof Error && (e as Error & { status?: number }).status === 403) return "you can only delete your own";
+    return "delete failed";
+  }
+
+  const isOn = (id: string) => (id === who ? iAmLive : liveNow.includes(id));
   const rows = others.slice().sort((a, b) => {
     const d = Number(isOn(b)) - Number(isOn(a));
-    return d !== 0 ? d : a < b ? -1 : 1;
+    if (d !== 0) return d;
+    if (a < b) return -1;
+    return 1;
   });
   const onTotal = rows.filter(isOn).length + (iAmLive ? 1 : 0);
 
@@ -1304,16 +1324,12 @@ async function refreshPresence(s: Sess) {
     .filter((k) => nowMs - typers[k] < 6000)
     .map(whoLabel)
     .slice(0, 3);
-  const typingText =
-    typingNames.length === 0
-      ? ""
-      : typingNames.length === 1
-        ? typingNames[0] + " is typing"
-        : typingNames.length === 2
-          ? typingNames[0] + " and " + typingNames[1] + " are typing"
-          : typingNames.slice(0, 2).join(", ") + " and " + (typingNames.length - 2) + " more are typing";
+  const typingText = typingLine(typingNames);
 
-  const head = ch ? "# " + (others.length === 1 ? short(others[0]) : short(ch.sid)) : "private chat";
+  let headLabel = "";
+  if (others.length === 1) headLabel = short(others[0]);
+  else if (ch) headLabel = short(ch.sid);
+  const head = ch ? "# " + headLabel : "private chat";
 
   return (
     <div className="H0Lil">
@@ -1483,7 +1499,7 @@ async function refreshPresence(s: Sess) {
               <div className={"n2UDd" + (up ? " JjUHb" : " Rp4vXq")}>{short(p).slice(0, 1)}</div>
               <div>
                 <div className="NytBQ">{short(p)}</div>
-                <div className="xc0wO">{up ? (keyOk ? "online, key known" : "online") : "offline"}</div>
+                <div className="xc0wO">{presenceText(up, keyOk)}</div>
               </div>
               <div className={"kVw8L" + (up ? " Qm7dRt" : "")} />
             </div>

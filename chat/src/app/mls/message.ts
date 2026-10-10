@@ -69,18 +69,24 @@ export type Sealed = {
   leaf: number;
 };
 
-export function sealPrivate(
-  groupId: Uint8Array,
-  epoch: number,
-  ctype: number,
-  auth: Uint8Array,
-  body: Uint8Array,
-  senderDataSecret: Uint8Array,
-  ratchetKey: Uint8Array,
-  ratchetNonce: Uint8Array,
-  leaf: number,
-  generation: number,
-): Sealed {
+export type ContentCtx = {
+  groupId: Uint8Array;
+  epoch: number;
+  ctype: number;
+  auth: Uint8Array;
+  senderDataSecret: Uint8Array;
+};
+
+export type SealedIn = ContentCtx & {
+  body: Uint8Array;
+  ratchetKey: Uint8Array;
+  ratchetNonce: Uint8Array;
+  leaf: number;
+  generation: number;
+};
+
+export function sealPrivate(inp: SealedIn): Sealed {
+  const { groupId, epoch, ctype, auth, body, senderDataSecret, ratchetKey, ratchetNonce, leaf, generation } = inp;
   const guard = randomBytes(4);
   const contentAad = privateContentAad(groupId, epoch, ctype, auth);
   const nonce = xorNonce(ratchetNonce, ratchetKey, guard);
@@ -94,16 +100,14 @@ export function sealPrivate(
   return { encryptedSenderData, ciphertext, generation, leaf };
 }
 
-export function openPrivate(
-  groupId: Uint8Array,
-  epoch: number,
-  ctype: number,
-  auth: Uint8Array,
-  encryptedSenderData: Uint8Array,
-  ciphertext: Uint8Array,
-  senderDataSecret: Uint8Array,
-  keysFor: (leaf: number, generation: number) => { key: Uint8Array; nonce: Uint8Array },
-): { body: Uint8Array; leaf: number; generation: number } {
+export type OpenIn = ContentCtx & {
+  encryptedSenderData: Uint8Array;
+  ciphertext: Uint8Array;
+  keysFor: (leaf: number, generation: number) => { key: Uint8Array; nonce: Uint8Array };
+};
+
+export function openPrivate(inp: OpenIn): { body: Uint8Array; leaf: number; generation: number } {
+  const { groupId, epoch, ctype, auth, senderDataSecret, encryptedSenderData, ciphertext, keysFor } = inp;
   const k = senderDataKeys(senderDataSecret, ciphertext);
   const sdBytes = gcm(k.key, k.nonce, senderDataAad(groupId, epoch, ctype)).decrypt(encryptedSenderData);
   k.key.fill(0);

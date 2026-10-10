@@ -22,7 +22,7 @@ export async function GET(req: Request) {
     if (!row) continue;
     const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
     for (const who of mm) {
-      if (live.has(who) && out.indexOf(who) < 0) out.push(who);
+      if (live.has(who) && !out.includes(who)) out.push(who);
     }
   }
   return Response.json({ on: out });

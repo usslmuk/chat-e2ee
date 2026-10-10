@@ -13,7 +13,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ g: string }> })
   if (!row) return Response.json({ error: "no link" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
   const gi = typeof row[C.grps.gi] === "string" ? row[C.grps.gi] : "";
-  const inside = mm.indexOf(me.who) >= 0;
+  const inside = mm.includes(me.who);
   if (!inside) {
     return Response.json({ g, mm: [], sq: 0, ep: 0, inRoom: false, gi: "" });
   }

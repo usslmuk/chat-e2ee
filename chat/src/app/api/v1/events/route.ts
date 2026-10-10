@@ -6,6 +6,29 @@ import C from "../../../../../fields.json";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const KINDS = new Set(["offer", "answer", "ice", "typing", "bye"]);
+
+type Ctx = { who: string; body: Record<string, unknown>; link: string; mm: string[] };
+
+async function ctx(req: Request): Promise<Ctx | Response> {
+  const me = await authed(req);
+  if (!me) return deny();
+  const b = await req.json().catch(() => null);
+  if (!b || typeof b !== "object") return Response.json({ error: "bad" }, { status: 400 });
+  const link = String(b.link || "");
+  if (!/^[0-9a-f]{16,64}$/.test(link)) return Response.json({ error: "bad" }, { status: 400 });
+  const db = await getDb();
+  const row = await db.collection("grps").findOne({ [C.grps.g]: link });
+  if (!row) return Response.json({ error: "bad" }, { status: 404 });
+  const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
+  if (!mm.includes(me.who)) return Response.json({ error: "bad" }, { status: 403 });
+  return { who: me.who, body: b, link, mm };
+}
+
+function bad(): Response {
+  return Response.json({ error: "bad" }, { status: 400 });
+}
+
 export async function GET(req: Request) {
   const me = await authed(req);
   if (!me) return deny();
@@ -54,35 +77,21 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const slow = throttled(req);
   if (slow) return slow;
-  const me = await authed(req);
-  if (!me) return deny();
-  const b = await req.json().catch(() => null);
-  if (!b || typeof b !== "object") return Response.json({ error: "bad" }, { status: 400 });
-  const link = String(b.link || "");
-  if (!/^[0-9a-f]{16,64}$/.test(link)) return Response.json({ error: "bad" }, { status: 400 });
-  const db = await getDb();
-  const row = await db.collection("grps").findOne({ [C.grps.g]: link });
-  if (!row) return Response.json({ error: "bad" }, { status: 404 });
-  const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  const from = me.who;
-  if (mm.indexOf(from) < 0) return Response.json({ error: "bad" }, { status: 403 });
+  const c = await ctx(req);
+  if (c instanceof Response) return c;
+  const b = c.body;
+  const from = c.who;
   const kind = String(b.kind || "");
-  if (kind !== "offer" && kind !== "answer" && kind !== "ice" && kind !== "typing" && kind !== "bye") {
-    return Response.json({ error: "bad" }, { status: 400 });
-  }
-  if (kind === "typing" && typeof b.on !== "boolean") {
-    return Response.json({ error: "bad" }, { status: 400 });
-  }
+  if (!KINDS.has(kind)) return bad();
+  if (kind === "typing" && typeof b.on !== "boolean") return bad();
   const body = b.body ?? null;
   const raw = body === null ? "" : JSON.stringify(body);
-  if (kind !== "typing" && raw.length > 32768) {
-    return Response.json({ error: "bad" }, { status: 400 });
-  }
+  if (kind !== "typing" && raw.length > 32768) return bad();
   const line =
     "data: " +
-    JSON.stringify({ type: "sig", from, link, kind, body, on: b.on === true }) +
+    JSON.stringify({ type: "sig", from, link: c.link, kind, body, on: b.on === true }) +
     "\n\n";
-  for (const other of mm) {
+  for (const other of c.mm) {
     if (other === from) continue;
     sendTo(other, line);
   }
@@ -90,17 +99,8 @@ export async function POST(req: Request) {
 }
 
 export async function PUT(req: Request) {
-  const me = await authed(req);
-  if (!me) return deny();
-  const b = await req.json().catch(() => null);
-  if (!b || typeof b !== "object") return Response.json({ error: "bad" }, { status: 400 });
-  const link = String(b.link || "");
-  if (!/^[0-9a-f]{16,64}$/.test(link)) return Response.json({ error: "bad" }, { status: 400 });
-  const db = await getDb();
-  const row = await db.collection("grps").findOne({ [C.grps.g]: link });
-  if (!row) return Response.json({ error: "bad" }, { status: 404 });
-  const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad" }, { status: 403 });
-  tell(mm, me.who, { type: "wake", link });
+  const c = await ctx(req);
+  if (c instanceof Response) return c;
+  tell(c.mm, c.who, { type: "wake", link: c.link });
   return Response.json({ ok: true });
 }

@@ -7,22 +7,22 @@ export type SignalBody =
   | { kind: "ice"; cand: RTCIceCandidateInit };
 
 export type Peer = {
-  id: string;
-  pc: RTCPeerConnection;
+  readonly id: string;
+  readonly pc: RTCPeerConnection;
   dc: RTCDataChannel | null;
   open: boolean;
   remoteSet: boolean;
 };
 
 export type Mesh = {
-  link: string;
-  self: string;
-  peers: Map<string, Peer>;
-  online: Set<string>;
-  signal: Signal;
-  deliver: Deliver;
-  onData: (from: string, payload: Uint8Array) => void;
-  onChange: () => void;
+  readonly link: string;
+  readonly self: string;
+  readonly peers: Map<string, Peer>;
+  readonly online: Set<string>;
+  readonly signal: Signal;
+  readonly deliver: Deliver;
+  readonly onData: (from: string, payload: Uint8Array) => void;
+  readonly onChange: () => void;
 };
 
 const FALLBACK_ICE: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
@@ -66,7 +66,7 @@ function make(id: string): Peer {
   return p;
 }
 
-function bind(m: Mesh, p: Peer): void {
+function bind(m: Mesh, p: Peer): (dc: RTCDataChannel) => void {
   const attach = (dc: RTCDataChannel) => {
     p.dc = dc;
     dc.binaryType = "arraybuffer";
@@ -88,6 +88,7 @@ function bind(m: Mesh, p: Peer): void {
   p.pc.onicecandidate = (e) => {
     if (e.candidate) m.signal(p.id, { kind: "ice", cand: e.candidate.toJSON() });
   };
+  return attach;
 }
 
 export function mesh(link: string, self: string, signal: Signal, deliver: Deliver, onData: (from: string, p: Uint8Array) => void, onChange: () => void): Mesh {
@@ -109,8 +110,8 @@ export async function dial(m: Mesh, to: string): Promise<void> {
   const p = slot(m, to);
   if (!p) return;
   if (p.pc.signalingState !== "stable") return;
-  const dc = p.pc.createDataChannel("m", { ordered: true });
-  bind(m, p);
+  const attach = bind(m, p);
+  attach(p.pc.createDataChannel("m", { ordered: true }));
   const offer = await p.pc.createOffer();
   await p.pc.setLocalDescription(offer);
   m.signal(to, { kind: "offer", sdp: p.pc.localDescription ?? offer });

@@ -15,6 +15,6 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const room = await db.collection("grps").findOne({ [C.grps.g]: String(row[C.blobs.g] || "") });
   if (!room) return Response.json({ error: "no blob" }, { status: 404 });
   const mm: string[] = Array.isArray(room[C.grps.mm]) ? room[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) < 0) return Response.json({ error: "no blob" }, { status: 404 });
+  if (!mm.includes(me.who)) return Response.json({ error: "no blob" }, { status: 404 });
   return Response.json({ id: String(row[C.blobs.id]), data: String(row[C.blobs.data]) });
 }

@@ -255,16 +255,6 @@ export function applyAny(g: G.Group, w: RemoteWire, shares: { l: number; n: numb
 }
 
 export function remote(out: G.CommitOut, pub: Uint8Array): RemoteWire {
-  const leaf = G.leafIndexOf(out.group.t, pub);
-  let hit: G.OutShare | null = null;
-  if (leaf >= 0) {
-    for (const s of out.pathShares) {
-      if (s.forLeaf === leaf) {
-        hit = s;
-        break;
-      }
-    }
-  }
   return {
     content: b64e(out.content),
     signature: b64e(out.signature),
@@ -293,7 +283,18 @@ export function reseed(g: G.Group): G.Group {
 export function sealApp(g: G.Group, plaintext: Uint8Array): { ct: string; gen: number } {
   const gen = g.app.gen;
   const rk = S.step(g.app);
-  const out = M.sealPrivate(g.id, g.epoch, M.APPLICATION, new Uint8Array(0), plaintext, g.secrets.sender, rk.key, rk.nonce, g.me, gen);
+  const out = M.sealPrivate({
+    groupId: g.id,
+    epoch: g.epoch,
+    ctype: M.APPLICATION,
+    auth: new Uint8Array(0),
+    senderDataSecret: g.secrets.sender,
+    body: plaintext,
+    ratchetKey: rk.key,
+    ratchetNonce: rk.nonce,
+    leaf: g.me,
+    generation: gen
+  });
   rk.key.fill(0);
   rk.nonce.fill(0);
   const sdLen = out.encryptedSenderData.length;
@@ -336,9 +337,18 @@ export function openApp(g: G.Group, blob: Uint8Array): { body: Uint8Array; leaf:
   const enc = blob.subarray(3, 3 + sdLen);
   const ct = blob.subarray(3 + sdLen);
   try {
-    return M.openPrivate(g.id, g.epoch, M.APPLICATION, new Uint8Array(0), enc, ct, g.secrets.sender, (leaf, gen) => {
-      if (leaf < 0 || leaf >= g.n) throw new Error("bad leaf");
-      return X.ratchetAt(b64e(g.id), leaf, senderSeed(g, leaf), gen);
+    return M.openPrivate({
+      groupId: g.id,
+      epoch: g.epoch,
+      ctype: M.APPLICATION,
+      auth: new Uint8Array(0),
+      senderDataSecret: g.secrets.sender,
+      encryptedSenderData: enc,
+      ciphertext: ct,
+      keysFor: (leaf, gen) => {
+        if (leaf < 0 || leaf >= g.n) throw new Error("bad leaf");
+        return X.ratchetAt(b64e(g.id), leaf, senderSeed(g, leaf), gen);
+      }
     });
   } catch (e) {
     return null;
