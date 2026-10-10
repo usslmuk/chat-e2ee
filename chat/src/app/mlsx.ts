@@ -222,11 +222,6 @@ export function rotateIdentity(g: G.Group): G.CommitOut {
   return G.commit(g, [], [], { updates: [g.me], rotateSelf: true });
 }
 
-export function rotationDue(g: G.Group, everyDays: number): boolean {
-  if (!g.rotatedAt) return false;
-  return Date.now() - g.rotatedAt >= everyDays * 86400000;
-}
-
 export function applyCommit(g: G.Group, out: G.CommitOut): G.Group {
   return G.applyCommit(g, out);
 }

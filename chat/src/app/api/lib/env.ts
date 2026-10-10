@@ -42,7 +42,7 @@ export function optionsFromEnv(env: EnvMap = process.env): Record<string, string
   return out;
 }
 
-const LINE = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/mg;
+const LINE = /^[ \t]*(?:export[ \t]+)?([\w.-]+)(?:[ \t]*=[ \t]*|:[ \t]+)?((?:'(?:[^'\\]|\\[\s\S])*'|"(?:[^"\\]|\\[\s\S])*"|`(?:[^`\\]|\\[\s\S])*`|[^#\r\n]*)?)[ \t]*(?:#.*)?$/gm;
 
 const KEY_CHAR = new Uint8Array(256);
 for (let i = 48; i <= 57; i++) KEY_CHAR[i] = 1;

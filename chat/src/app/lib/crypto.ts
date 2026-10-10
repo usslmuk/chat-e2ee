@@ -140,11 +140,6 @@ export function edVerify(pub: Uint8Array, data: Uint8Array, sig: Uint8Array): bo
 const pairInfo = "p4Wk8Zn2Qv6T";
 const msgTag = new Uint8Array([109, 115, 103]);
 
-export function keysDue(when: number, everyDays: number): boolean {
-  if (!when) return true;
-  return Date.now() - when >= everyDays * 86400000;
-}
-
 export function delCommitment(tok: Uint8Array): string {
   return b64e(sha256(concat(new TextEncoder().encode("chat. delete commitment v1|"), tok)));
 }

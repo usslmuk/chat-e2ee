@@ -22,6 +22,7 @@ import * as P from "../src/app/mls/psk.ts";
 import * as T from "../src/app/mls/tree.ts";
 import { Report, hex, suite, opt } from "./support.ts";
 import { verifyLeaf } from "../src/app/mls/commit.ts";
+import { suiteSelfTest } from "../src/app/mls/selftest.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 export function toNodes(wire: F.RatchetTree[]): T.TNode[] {
@@ -426,6 +427,14 @@ export async function handlingCommit(r: Report): Promise<void> {
     }
   }
   r.family("passive-client-handling-commit", commits + " commits, " + paths + " with an update path, " + derived + " epoch transitions derived end to end");
+}
+
+export async function cipherSuites(r: Report): Promise<void> {
+  for (const id of [1, 2]) {
+    const out = suiteSelfTest(id);
+    r.check("suite " + id + " self test", out.ok, out.label + ": " + out.fails.join("; "));
+  }
+  r.family("cipher-suites", "both RFC 9420 suites: KEM, AEAD, sign, derivePair");
 }
 
 export async function transcriptHashes(r: Report): Promise<void> {

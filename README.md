@@ -121,9 +121,11 @@ defined, matching RFC 9420:
 | 2 | MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448 | AES-256-GCM | X448 | SHA-512 | Ed448 |
 
 `src/app/mls/suite.ts` holds both. HPKE, the KEM, the AEAD, the hash and the
-signature are all selected from it, and `mls/selftest.ts` exercises each suite in
-isolation: KEM agreement, AEAD round trip, sign and verify including a wrong key
-and a wrong message, and `DeriveKeyPair` consistency.
+signature are all selected from it. The `cipher-suites` family runs
+`mls/selftest.ts` for each suite in isolation: KEM agreement both directions, AEAD
+round trip, sign and verify including a wrong key and a wrong message, and
+`DeriveKeyPair` consistency. It needs no downloaded vectors, so it runs first and
+fails fast if a primitive is wrong.
 
 Suite 1 is what ships and what the test vectors cover. Suite 2 is implemented and
 self-tested, and running it means the published vectors no longer describe your
@@ -138,7 +140,8 @@ update path. The commit itself is still signed by the outgoing key, which is wha
 RFC 9420 section 12.4.2 requires, since that is the leaf the receiver still has.
 
 Session keys were already regenerated on every page load, so rotation is about the
-group identity, not the transport.
+group identity, not the transport. The room footer has a rotate button next to
+delete chat.
 
 ### Conformance testing
 
@@ -152,6 +155,7 @@ The runner lives in the repository rather than in scratch scripts, so every numb
 below is something you can rerun rather than take on trust.
 
 ```
+cipher-suites                      2 pass    both RFC 9420 suites in isolation: KEM, AEAD, sign, derivePair
 treekem                      997 pass    62 update paths: node keys, path secret chain, commit secret, tree hash after
 tree-math                   6098 pass    tree math at ten tree sizes up to 512 leaves
 tree-validation              468 pass    tree hashes and resolutions across fourteen trees
@@ -439,6 +443,26 @@ person cap without fixing the ratchet tree first.
 
 <details>
 <summary>Changelog</summary>
+
+## 0.1.3
+
+Cleanup after the rotation work, and one thing that was claimed but not reachable.
+
+**Fixed**
+
+- Rotation could not be triggered. `rotateIdentity` existed, was tested, and had
+  no button. It is now wired to the room footer next to delete chat, so the
+  feature is actually usable rather than only exercised by a test.
+- Cached sender seeds were never dropped. `forgetRatchets` cleared the ratchet
+  window but left the derived leaf secrets alive for the lifetime of the page, so
+  an epoch's secrets outlived the epoch they belonged to. They are now zeroed and
+  released alongside the ratchets.
+- `keysDue` was written for the rotation schedule and then never used, because
+  the check ended up in `mlsx` next to the group it reads. Removed.
+- `suiteSelfTest` had no caller, so suite 2 was verified by hand and never again.
+  It is now the `cipher-suites` family and runs on every `pnpm vectors`, covering
+  both suites with no downloaded vectors, first, so a broken primitive fails
+  before anything else runs.
 
 ## 0.1.2
 

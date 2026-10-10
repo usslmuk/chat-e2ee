@@ -55,7 +55,6 @@ const CACHE_MAX = 60;
 
 type Held = { url: string; type: string };
 
-const ROTATE_DAYS = 30;
 
 function sniff(bytes: Uint8Array): string {
   const at = (i: number) => (i < bytes.length ? bytes[i] : 0);
@@ -267,7 +266,7 @@ export default function Shell() {
     setSess({ ...s });
     window.history.replaceState(null, "", "?l=" + ch.sid);
     tick();
-    loadMarks(sid);
+    void loadMarks(sid);
   }
 
   useEffect(() => {
@@ -342,7 +341,7 @@ export default function Shell() {
       await W.ready();
       W.setSelfKey();
       setSess(s);
-      announce(s);
+      void announce(s);
       const l = new URLSearchParams(window.location.search).get("l") || "";
       if (l) {
         await openLink(s, l);
@@ -619,7 +618,7 @@ async function refreshPresence(s: Sess) {
       setSess({ ...s });
     }
     wirePeers(g);
-    announce(s);
+    void announce(s);
     for (const who of st.mm) {
       if (who === s.who) continue;
       try {
@@ -667,7 +666,6 @@ async function refreshPresence(s: Sess) {
         const pub = W.publishCommit(g);
         if (pub) {
           await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
-          if (W.rotationDue(g, ROTATE_DAYS)) announce(s);
         }
       }
       await catchUp(s, g);
@@ -805,7 +803,7 @@ async function refreshPresence(s: Sess) {
     });
   }
 
-  async function loadMarks(g: string) {
+  async function loadMarks(g: string): Promise<void> {
     const s = ref.current.sess;
     if (!s || W.memberCount(g) === 0) return;
     try {
@@ -859,7 +857,7 @@ async function refreshPresence(s: Sess) {
       W.forgetRatchets(g);
       const pub = W.publishCommit(g);
       if (pub) await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
-      announce(s);
+      void announce(s);
       setSess({ ...s });
     } catch (e) {
       setErr(dberr(e) ? "database unreachable" : "rotate failed");
@@ -915,7 +913,7 @@ async function refreshPresence(s: Sess) {
       }
       const code = String((await freshInvite(s.token, g)).code);
       setLink(code);
-      announce(s);
+      void announce(s);
       if (!ch) {
         s.chans.push({ sid: g, link: code, members: st.mm, unread: 0 });
         setSess({ ...s });
@@ -1372,16 +1370,16 @@ async function refreshPresence(s: Sess) {
                   {groups.length > 0 ? (
                     <div className="cHp1R" key={groups.map((g) => g.emo + g.n).join("|")}>
                       {groups.map((g) => (
-                        <span key={g.emo} onClick={() => toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></span>
+                        <button key={g.emo} type="button" onClick={() => toggleMark(m.id, g.emo)} className={g.mine ? "cHp2C nNBWY" : "cHp2C"}>{g.emo} <b>{g.n}</b></button>
                       ))}
                     </div>
                   ) : null}
                   {hover === m.id ? (
                     <div className="rBr3A">
-                      <span onClick={() => toggleMark(m.id, "❤️")}>❤️</span>
-                      <span onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></span>
+                      <button type="button" onClick={() => toggleMark(m.id, "❤️")}>❤️</button>
+                      <button type="button" onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></button>
                       {m.mine ? (
-                        <span onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></span>
+                        <button type="button" onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></button>
                       ) : null}
                     </div>
                   ) : null}
@@ -1441,6 +1439,7 @@ async function refreshPresence(s: Sess) {
           {err ? <div className="vSx8V">{err}</div> : null}
           {isFunder ? (
             <div className="TYj89">
+              <button className="ZwE4b td7Kx" onClick={() => rotate(room)} title="replace your signing key in this room with a fresh one">rotate key</button>
               <button className="ZwE4b td7Kx" onClick={remove}>delete chat</button>
             </div>
           ) : null}

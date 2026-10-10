@@ -1,11 +1,12 @@
 import { Report } from "./support.ts";
 import { treeMath, cryptoBasics, keySchedule, secretTree, deserialization, pskSecret } from "./primitives.ts";
-import { treeValidation, treeOperations, welcome, passiveClientWelcome, handlingCommit, treekem, transcriptHashes } from "./groups.ts";
+import { treeValidation, treeOperations, welcome, passiveClientWelcome, handlingCommit, treekem, transcriptHashes, cipherSuites } from "./groups.ts";
 
 const only = new Set(process.argv.slice(2));
 const r = new Report();
 
 const families: [string, () => Promise<void>][] = [
+  ["cipher-suites", () => cipherSuites(r)],
   ["tree-math", () => treeMath(r)],
   ["crypto-basics", () => cryptoBasics(r)],
   ["key-schedule", () => keySchedule(r)],

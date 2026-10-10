@@ -1,4 +1,5 @@
 * { box-sizing: border-box; }
+button { background: none; border: 0; padding: 0; color: inherit; font: inherit; }
 html, body { margin: 0; height: 100%; background: #1e1f22; color: #dbdee1; font-family: sans-serif; }
 .H0Lil { display: flex; height: 100vh; }
 .VCY08 { width: 72px; background: #1e1f22; display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 8px; }

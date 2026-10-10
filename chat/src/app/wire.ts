@@ -135,11 +135,6 @@ export function applyCommits(room: string, list: CommitWire[]): number {
   return done;
 }
 
-export function rotationDue(room: string, everyDays: number): boolean {
-  const g = load(room);
-  return g ? X.rotationDue(g, everyDays) : false;
-}
-
 export function saveGroup(room: string, g: G.Group): void {
   const saved = get(room);
   if (saved) put(room, g, { signer: saved.signer, initPub: saved.initPub, ref: saved.ref, pkg: saved.pkg });
@@ -147,6 +142,8 @@ export function saveGroup(room: string, g: G.Group): void {
 
 export function forgetRatchets(room: string): void {
   X.forgetRatchets(room);
+  const saved = read<Record<string, Group>>(KEY)?.[room];
+  if (saved) X.forgetSeeds(X.load(saved));
 }
 
 export function all(): Record<string, Group> {
