@@ -737,24 +737,22 @@ async function refreshPresence(s: Sess) {
     setSess({ ...s });
   }
 
-  async function pull(pre?: any[]) {
+  async function pull() {
     return seq(async () => {
       const s = ref.current.sess;
       if (!s) return;
       const rooms = s.chans.map((c) => c.sid).filter((x) => x.length > 0);
-      let rows: any[];
-      if (pre) {
-        rows = pre;
-      } else {
-        rows = [];
-        let cursor: string | null = null;
-        for (let page = 0; page < 25; page++) {
-          const r = await getMsgs(s.token, rooms, cursor);
-          const batch = r.msgs || [];
-          rows.push(...batch);
-          if (!r.more || !r.cursor || batch.length === 0) break;
-          cursor = r.cursor;
-        }
+      const rows: any[] = [];
+      let cursor: string | null = null;
+      let paged = true;
+      let whole = false;
+      for (let page = 0; page < 25 && paged; page++) {
+        const r = await getMsgs(s.token, rooms, cursor);
+        const batch = r.msgs || [];
+        rows.push(...batch);
+        paged = !!r.more && !!r.cursor && batch.length > 0;
+        cursor = r.cursor;
+        if (!paged) whole = r.full === true;
       }
       let changed = false;
       for (const row of rows) {
@@ -767,6 +765,20 @@ async function refreshPresence(s: Sess) {
         addMsg(s, withAtt(String(row.id), o.who, g, { t: o.text, d: o.at, a: o.att }, o.who === s.who));
         remember(String(row.id));
         changed = true;
+      }
+      if (whole) {
+        const live = new Set(rows.map((r: any) => String(r.id)));
+        const gone = s.msgs.filter((m) => rooms.includes(m.room) && !live.has(m.id));
+        if (gone.length > 0) {
+          const goneIds = new Set(gone.map((m) => m.id));
+          for (const m of gone) {
+            if (m.att) dropBlob(m.att.id);
+            seen.current.delete(m.id);
+          }
+          s.msgs = s.msgs.filter((m) => !goneIds.has(m.id));
+          setMarks((prev) => prev.filter((x) => !goneIds.has(x.mid)));
+          changed = true;
+        }
       }
       if (changed) setSess({ ...s });
     });

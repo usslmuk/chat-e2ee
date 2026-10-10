@@ -74,10 +74,14 @@ export async function GET(req: Request) {
   const page = rows.slice(0, PAGE);
 
   const perRoom: Record<string, number> = {};
+  const capped = new Set<string>();
   const kept = page.filter((r: { [key: string]: unknown }) => {
     const g = String(r[C.msgs.g]);
     const n = (perRoom[g] || 0) + 1;
-    if (n > PER_ROOM) return false;
+    if (n > PER_ROOM) {
+      capped.add(g);
+      return false;
+    }
     perRoom[g] = n;
     return true;
   });
@@ -86,6 +90,7 @@ export async function GET(req: Request) {
   return Response.json({
     more,
     cursor: cursorOut,
+    full: capped.size === 0,
     msgs: kept
       .slice()
       .reverse()

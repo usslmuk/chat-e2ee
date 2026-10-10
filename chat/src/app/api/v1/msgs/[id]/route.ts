@@ -1,6 +1,7 @@
 import { createPublicKey, verify } from "crypto";
 import { getDb } from "../../../lib/db";
 import { authed, deny, member, need, throttled } from "../../../lib/auth";
+import { tell } from "../../../lib/push";
 import C from "../../../../../../fields.json";
 
 function edKey(edB64: string) {
@@ -40,5 +41,6 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   }
   if (!mine) return Response.json({ error: "not yours" }, { status: 403 });
   await db.collection("msgs").deleteOne({ [C.msgs.id]: id, [C.msgs.g]: g });
+  tell(found.mm, me.who, { type: "wake", link: g });
   return Response.json({ ok: true });
 }

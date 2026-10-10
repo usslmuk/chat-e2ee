@@ -83,7 +83,7 @@ export function postMsg(token: string, body: object) {
 
 export function getMsgs(token: string, rooms: string[], before?: string | null) {
   const q = "/api/v1/msgs?g=" + rooms.join(",") + (before ? "&before=" + before : "");
-  return call(q, token, "GET") as Promise<{ msgs: any[]; more: boolean; cursor: string | null }>;
+  return call(q, token, "GET") as Promise<{ msgs: any[]; more: boolean; cursor: string | null; full?: boolean }>;
 }
 
 export function newLink(token: string, gi: string) {

@@ -273,10 +273,18 @@ person cap without fixing the ratchet tree first.
 
 ## 2026-10-11
 
-MLS validated against the official RFC 9420 test vectors.
+Deleted messages now disappear for both people. MLS validated against the official
+RFC 9420 test vectors.
 
 **Corrected**
 
+- Deleting a message only removed it on the deleting client. The delete endpoint
+  did not notify the room, and the message merge only ever added, so the other
+  participant kept showing a message the server had already discarded.
+- `GET /api/v1/msgs` now reports whether the per room cap truncated the response.
+  A room holding more than sixty messages returns only sixty, so treating an
+  absent id as deleted would have thrown away real history. The client prunes only
+  when the server confirms the response was complete.
 - `ExpandWithLabel` used a fixed two byte length header for the label and context.
   RFC 9420 section 2.1.2 length prefixes vectors with the variable length integer
   from RFC 9000 section 16. Every derived secret was wrong as a result. Both of
