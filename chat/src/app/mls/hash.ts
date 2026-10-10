@@ -7,15 +7,13 @@ export function leafNodeInput(index: number, node: TNode): Uint8Array {
     return new Writer().u8(1).u32(index).none(false).out();
   }
   const v = node.v;
-  const w = new Writer()
+  return new Writer()
     .u8(1)
     .u32(index)
     .none(true)
-    .vec(v.enc)
-    .vec(v.sig)
-    .vec(v.cred)
-    .vec(v.ph ?? new Uint8Array(0));
-  return w.out();
+    .raw(v.tbs)
+    .vec(v.signature)
+    .out();
 }
 
 export function parentNodeInput(node: TNode, leftH: Uint8Array, rightH: Uint8Array): Uint8Array {

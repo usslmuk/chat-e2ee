@@ -19,10 +19,12 @@ export const WIRE_PRIVATE = 2;
 
 export type Leaf = {
   enc: Uint8Array;
-  sig: Uint8Array;
+  sigKey: Uint8Array;
   cred: Uint8Array;
   source: number;
   parentHash: Uint8Array | null;
+  tbs: Uint8Array;
+  signature: Uint8Array;
 };
 
 export type Par = {
@@ -31,26 +33,41 @@ export type Par = {
   parentHash: Uint8Array;
 };
 
-export function writeLeafNode(v: Leaf): Uint8Array {
-  const w = new Writer().vec(v.enc).vec(v.sig).vec(v.cred).u8(v.source);
+export function defaultCaps(): Uint8Array {
+  return new Writer()
+    .vec(new Writer().u16(VERSION).out())
+    .vec(new Writer().u16(SUITE).out())
+    .vec(new Uint8Array(0))
+    .vec(new Writer().u8(ADD).u8(UPDATE).u8(REMOVE).u8(PSK).out())
+    .vec(new Writer().u16(1).out())
+    .out();
+}
+
+export function leafTbsOf(
+  v: { enc: Uint8Array; sigKey: Uint8Array; cred: Uint8Array; source: number; parentHash: Uint8Array | null },
+  caps?: Uint8Array,
+  exts?: Uint8Array,
+): Uint8Array {
+  const w = new Writer()
+    .vec(v.enc)
+    .vec(v.sigKey)
+    .u16(1)
+    .vec(v.cred)
+    .raw(caps ?? defaultCaps())
+    .u8(v.source);
   if (v.source === SRC_KEY_PACKAGE) w.u64(0).u64(0);
   else if (v.source === SRC_COMMIT) w.vec(v.parentHash ?? new Uint8Array(0));
+  w.vec(exts ?? new Uint8Array(0));
   return w.out();
 }
 
+export function writeLeafNode(v: Leaf): Uint8Array {
+  return new Writer().u8(1).raw(v.tbs).vec(v.signature).out();
+}
+
 export function readLeafNode(b: Buf): Leaf {
-  const enc = b.vec();
-  const sig = b.vec();
-  const cred = b.vec();
-  const source = b.u8();
-  let parentHash: Uint8Array | null = null;
-  if (source === SRC_KEY_PACKAGE) {
-    b.u64();
-    b.u64();
-  } else if (source === SRC_COMMIT) {
-    parentHash = b.vec();
-  }
-  return { enc, sig, cred, source, parentHash };
+  b.u8();
+  return readLeafNodeBody(b);
 }
 
 export function writeParentNode(v: Par): Uint8Array {
@@ -59,6 +76,62 @@ export function writeParentNode(v: Par): Uint8Array {
 
 export function readParentNode(b: Buf): Par {
   return { enc: b.vec(), sig: b.vec(), parentHash: b.vec() };
+}
+
+export function writeParentNodeFull(v: Par): Uint8Array {
+  return new Writer().u8(2).vec(v.enc).vec(v.sig).vec(v.parentHash).out();
+}
+
+export type RatchetTree =
+  | { k: 0 }
+  | { k: 1; v: Leaf }
+  | { k: 2; v: Par };
+
+export function writeRatchetTree(nodes: RatchetTree[]): Uint8Array {
+  const body = new Writer();
+  for (const nd of nodes) {
+    if (nd.k === 0) body.none(false);
+    else if (nd.k === 1) body.none(true).raw(writeLeafNode(nd.v));
+    else body.none(true).raw(writeParentNodeFull(nd.v));
+  }
+  return new Writer().vec(body.out()).out();
+}
+
+export function readRatchetTree(b: Buf): RatchetTree[] {
+  const body = new Buf(b.vec());
+  const out: RatchetTree[] = [];
+  while (!body.done) {
+    if (body.u8() === 0) {
+      out.push({ k: 0 });
+      continue;
+    }
+    const kind = body.u8();
+    if (kind === 1) out.push({ k: 1, v: readLeafNodeBody(body) });
+    else if (kind === 2) out.push({ k: 2, v: readParentNode(body) });
+    else throw new Error("bad node type");
+  }
+  return out;
+}
+
+function readLeafNodeBody(b: Buf): Leaf {
+  const start = b.pos;
+  const enc = b.vec();
+  const sigKey = b.vec();
+  b.u16();
+  const cred = b.vec();
+  for (let i = 0; i < 5; i++) b.vec();
+  const source = b.u8();
+  let parentHash: Uint8Array | null = null;
+  if (source === SRC_KEY_PACKAGE) {
+    b.u64();
+    b.u64();
+  } else if (source === SRC_COMMIT) {
+    parentHash = b.vec();
+  }
+  b.vec();
+  const end = b.pos;
+  const signature = b.vec();
+  return { enc, sigKey, cred, source, parentHash, tbs: b.slice(start, end), signature };
 }
 
 export type Proposal =
@@ -111,7 +184,8 @@ export function writeCommit(path: UpdatePath | null, proposals: Proposal[]): Uin
 }
 
 export function framed(groupId: Uint8Array, epoch: number, leaf: number, auth: Uint8Array, ctype: number, body: Uint8Array): Uint8Array {
-  return new Writer().vec(groupId).u64(epoch).u8(MEMBER).u32(leaf).vec(auth).u8(ctype).vec(body).out();
+  const w = new Writer().vec(groupId).u64(epoch).u8(MEMBER).u32(leaf).vec(auth).u8(ctype);
+  return (ctype === APPLICATION ? w.vec(body) : w.raw(body)).out();
 }
 
 export type Framed = {
@@ -128,13 +202,16 @@ export function readFramed(b: Buf): Framed {
   const epoch = b.u64();
   const kind = b.u8();
   if (kind !== MEMBER) throw new Error("external sender");
+  const sender = b.u32();
+  const auth = b.vec();
+  const ctype = b.u8();
   return {
     groupId,
     epoch,
-    sender: b.u32(),
-    auth: b.vec(),
-    ctype: b.u8(),
-    body: b.vec()
+    sender,
+    auth,
+    ctype,
+    body: ctype === APPLICATION ? b.vec() : b.rest()
   };
 }
 
@@ -147,7 +224,7 @@ export function contentTbs(wire: number, content: Uint8Array, ctx: Uint8Array): 
 }
 
 export function contentTbsExt(wire: number, content: Uint8Array, ctx: Uint8Array, ext: Uint8Array): Uint8Array {
-  return new Writer().u16(VERSION).u16(wire).vec(content).vec(ctx).vec(ext).out();
+  return new Writer().u16(VERSION).u16(wire).raw(content).raw(ctx).raw(ext).out();
 }
 
 export function externalFramed(groupId: Uint8Array, epoch: number, senderIndex: number, auth: Uint8Array, ctype: number, body: Uint8Array): Uint8Array {
@@ -155,19 +232,19 @@ export function externalFramed(groupId: Uint8Array, epoch: number, senderIndex: 
 }
 
 export function externalTbs(wire: number, content: Uint8Array): Uint8Array {
-  return new Writer().u16(VERSION).u16(wire).vec(content).out();
+  return new Writer().u16(VERSION).u16(wire).raw(content).out();
 }
 
 export function confirmedInput(wire: number, content: Uint8Array, signature: Uint8Array): Uint8Array {
-  return new Writer().u16(wire).vec(content).vec(signature).out();
+  return new Writer().u16(wire).raw(content).vec(signature).out();
 }
 
 export function nextConfirmed(prev: Uint8Array, wire: number, content: Uint8Array, signature: Uint8Array): Uint8Array {
-  return sha256(new Writer().vec(prev).vec(confirmedInput(wire, content, signature)).out());
+  return sha256(new Writer().raw(prev).raw(confirmedInput(wire, content, signature)).out());
 }
 
 export function nextInterim(confirmed: Uint8Array, tag: Uint8Array): Uint8Array {
-  return sha256(new Writer().vec(confirmed).vec(tag).out());
+  return sha256(new Writer().raw(confirmed).vec(tag).out());
 }
 
 export function tbsLabel(label: string, body: Uint8Array): Uint8Array {
@@ -195,10 +272,9 @@ export function keyPackageRef(pkg: Uint8Array): Uint8Array {
   return sha256(pkg);
 }
 
-export function leafTbs(v: Leaf, groupId: Uint8Array | null, index: number, notBefore: number, notAfter: number): Uint8Array {
-  const w = new Writer().u16(VERSION).vec(v.enc).vec(v.cred).u8(v.source);
-  if (v.source === SRC_KEY_PACKAGE) w.u64(notBefore).u64(notAfter);
-  else w.vec(v.parentHash ?? new Uint8Array(0)).vec(groupId ?? new Uint8Array(0)).u32(index);
+export function leafTbs(v: Leaf, groupId: Uint8Array | null, index: number): Uint8Array {
+  const w = new Writer().raw(v.tbs);
+  if (v.source !== SRC_KEY_PACKAGE) w.vec(groupId ?? new Uint8Array(0)).u32(index);
   return w.out();
 }
 

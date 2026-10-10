@@ -23,13 +23,11 @@ port, no separate server to run.
 > [!WARNING]
 > ## Read this before you rely on it
 >
-> - **MLS passes the official RFC 9420 vectors, with one gap.** Tree math, crypto
->   basics, the key schedule, and the secret tree are verified against the vectors
->   published by the MLS working group and match byte for byte. That covers the
->   arithmetic, not the wire format of a full handshake. Welcome, commit framing,
->   and the passive client scenarios are implemented to the spec but not checked
->   against vectors, and this has never been tested against another MLS
->   implementation, so interoperability is still unproven.
+> - **MLS conformance is verified, interoperability is not.** The implementation passes
+>   the working group's published vectors for every part of the protocol it covers,
+>   including the tree hash and transcript hashes. It has never been tested against
+>   another MLS implementation, so interoperability is unproven. See Cryptography for
+>   what is and is not covered.
 > - **Single instance only.** Presence, offers, and ICE state live in process
 >   memory. Two instances break chat. This also rules out serverless hosts.
 
@@ -144,13 +142,17 @@ Written against the specs:
 
 - RFC 9420, MLS. Tree math, key schedule, secret tree, sender ratchets, key
   packages, commits with an update path, Welcome messages, PSK proposals, leaf
-  updates, external senders, resumption secrets, exporters. Verified against the
-  vectors published at
-  `github.com/mlswg/mls-implementations/tree/main/test-vectors`, for suite `0x0001`:
-  tree math across ten tree sizes up to 512 leaves, the crypto basics group, five
-  consecutive key schedule epochs, and the secret tree at one, eight, and thirty two
-  leaves. All match byte for byte. Suite `0x0001` only, since that is all this
-  implementation supports.
+  updates, external senders, resumption secrets, exporters, transcript hashes, and
+  ratchet tree serialization. Verified against the published vectors for suite
+  `0x0001`, covering tree math at ten sizes up to 512 leaves, crypto basics, five
+  consecutive key schedule epochs, the secret tree at one, eight, and thirty two
+  leaves, transcript hashes, the PSK secret chain, variable length headers, tree
+  validation across fourteen trees, and tree operations. Suite `0x0001` only, since
+  that is the only cipher suite implemented.
+- RFC 9420 sections 6.2, 6.3 and 8.2, message protection. Public messages are
+  implemented and both clients read and write them, but the working group's
+  `message-protection` vectors use a different framing that has not been matched,
+  so this part is written to the spec text and not verified against a vector.
 - RFC 9180, HPKE. DHKEM(X25519) base mode. Verified against the official test
   vectors: shared secret, key, base nonce, exporter secret, ciphertext, and secret
   export all match byte for byte.
@@ -278,41 +280,64 @@ RFC 9420 test vectors.
 
 **Corrected**
 
-- Deleting a message only removed it on the deleting client. The delete endpoint
-  did not notify the room, and the message merge only ever added, so the other
-  participant kept showing a message the server had already discarded.
-- `GET /api/v1/msgs` now reports whether the per room cap truncated the response.
-  A room holding more than sixty messages returns only sixty, so treating an
-  absent id as deleted would have thrown away real history. The client prunes only
-  when the server confirms the response was complete.
-- `ExpandWithLabel` used a fixed two byte length header for the label and context.
-  RFC 9420 section 2.1.2 length prefixes vectors with the variable length integer
-  from RFC 9000 section 16. Every derived secret was wrong as a result. Both of
-  our own clients agreed with each other, so the group worked, but no third party
-  implementation could have interchanged with it.
-- `ExpandWithLabel` ran HKDF extract before expand. The RFC defines it in terms of
-  `KDF.Expand`, which is RFC 5869 expand alone.
+Four encoding defects in the MLS layer, all of the same kind: a value written in
+this implementation's own shape rather than the one RFC 9420 specifies. Each one
+produced output that two of our own clients agreed on and no third party could read.
 
-Together those two made the key schedule, the secret tree, and the sender ratchets
-deviate from the spec. All now match the published vectors byte for byte.
+- `ExpandWithLabel` length prefixed the label and context with a fixed two byte field
+  instead of the variable length integer from RFC 9000 section 16, and ran HKDF extract
+  before expand. Every derived secret in the key schedule, the secret tree, and the
+  sender ratchets was wrong.
+- Every vector on the wire had the same fixed two byte length. Key packages, commits,
+  Welcome messages, and group info were all the wrong shape.
+- The transcript hashes chained the previous digest through a length prefixed vector,
+  and the framed content carried a length prefix inside the hash input. Both are fixed
+  and now verified, including the confirmation tag MAC.
+- The message layer had four more of the same. `FramedContent` length prefixed the
+  proposal or commit as well as the application message, though only the last is a
+  vector in the spec. `FramedContentTBS` length prefixed the content and the group
+  context, which are bare structs. `SenderData` wrote the reuse guard as a vector when
+  the spec fixes it at four bytes. And the nonce was derived by encrypting the guard
+  with the message key and XORing the whole result, instead of XORing the guard into
+  the first four bytes of the nonce from the key schedule.
+- The tree hash covered only the encryption key, signature key, credential, and parent
+  hash of a leaf node. RFC 9420 section 7.8 hashes the entire `LeafNode`, including
+  capabilities, extensions, and signature. Since the tree hash feeds `GroupContext`,
+  this changed every epoch's key schedule.
 
-- The secret tree descended with a `path` label and started from its own root
-  derivation. RFC 9420 section 9 specifies `ExpandWithLabel(., "tree", "left")` and
-  `"right"`, with the key schedule's `encryption_secret` as the root. Descent is now
-  a pure function of the encryption secret, so a member no longer mixes its held path
-  secrets into the secret tree.
-- The handshake and application ratchets were seeded by expanding the leaf secret
-  with the ratchet label and then expanding again inside the ratchet constructor.
-  The ratchet label belongs once, per section 9.
+Also in this release:
 
-Checked beyond the two member happy path. Tree descent is verified at every leaf for
-one, eight, and thirty two member trees, which is every width the published secret
-tree vectors cover. Two hundred generations on one ratchet are distinct, random
-access order does not disturb them, gaps are readable in any order, and each epoch
-of a five epoch key schedule yields distinct keys with no overlap between leaves.
+- The secret tree descended with a `path` label and a private root derivation. Section
+  9 specifies `"tree"` with a `left` or `right` context, rooted at the encryption
+  secret. Descent is now a pure function of the encryption secret.
+- The handshake and application ratchets expanded with the ratchet label twice, once
+  in the caller and once in the constructor. The label belongs once.
+- Leaf nodes stored the leaf signature in the field reserved for the signature key,
+  so the two were indistinguishable. They are separate fields now, and the leaf
+  signature covers the full node.
+- Ratchet trees are serialized as the RFC's `optional<Node>` vector and round trip
+  byte for byte. `GroupInfo` previously used a private node layout.
+- Deleting a message removed it only on the deleting client. The endpoint did not
+  notify the room and the message merge never removed anything.
+- `GET /api/v1/msgs` reports whether the per room cap truncated the response, so the
+  client only treats an absent id as deleted when the response was complete.
+
+**Verification**
+
+Ten vector families from the working group, 74 checks, all passing for suite `0x0001`:
+tree math, crypto basics, key schedule, secret tree, transcript hashes, PSK secrets,
+variable length headers, tree validation, tree operations, and ratchet tree round trip.
+
+Beyond the vectors, the secret tree is checked at every leaf of one, eight, and
+thirty two member trees, across two hundred distinct sender generations, out of order
+and skipped access, and across five consecutive key schedule epochs.
 
 **Added**
 
+- Public messages, per RFC 9420 section 6.2. They were not implemented at all before,
+  so every proposal and commit travelled as a private message. Written to the spec text
+  and covered by the live tests, but not confirmed against the working group's
+  `message-protection` vectors, whose framing differs.
 - TURN support with coturn shared secret credentials, issued per request and
   expiring in an hour. Optional, and off unless both variables are set.
 
@@ -365,8 +390,8 @@ Initial release.
 **Changed**
 
 - Rooms are capped at two participants, enforced server side.
-- Build stamp bumped to `10`. The HPKE key schedule changes make previously stored
-  group state unreadable, so existing rooms are cleared on load.
+- Build stamp bumped to `11`. The HPKE key schedule and tree hash changes make
+  previously stored group state unreadable, so existing rooms are cleared on load.
 
 **Corrected**
 

@@ -41,8 +41,30 @@ export class Buf {
     return hi * 4294967296 + lo;
   }
 
+  vlen(): number {
+    const first = this.u8();
+    const prefix = first >> 6;
+    if (prefix === 3) throw new Error("bad vector length");
+    const width = 1 << prefix;
+    let v = first & 63;
+    for (let i = 1; i < width; i++) v = v * 256 + this.u8();
+    return v;
+  }
+
+  slice(start: number, end: number): Uint8Array {
+    return this.b.subarray(start, end);
+  }
+
+  get pos(): number {
+    return this.o;
+  }
+
   vec(): Uint8Array {
-    return this.take(this.u16());
+    return this.take(this.vlen());
+  }
+
+  rest(): Uint8Array {
+    return this.take(this.left);
   }
 
   none(): boolean {
@@ -75,8 +97,24 @@ export class Writer {
     return this;
   }
 
+  vlen(n: number): this {
+    if (n < 64) this.parts.push(new Uint8Array([n]));
+    else if (n < 16384) this.parts.push(new Uint8Array([0x40 | ((n >> 8) & 63), n & 255]));
+    else if (n < 1073741824) {
+      this.parts.push(new Uint8Array([0x80 | ((n >>> 24) & 63), (n >>> 16) & 255, (n >>> 8) & 255, n & 255]));
+    } else {
+      throw new Error("vector too long");
+    }
+    return this;
+  }
+
   vec(v: Uint8Array): this {
-    this.u16(v.length);
+    this.vlen(v.length);
+    this.parts.push(v);
+    return this;
+  }
+
+  raw(v: Uint8Array): this {
     this.parts.push(v);
     return this;
   }

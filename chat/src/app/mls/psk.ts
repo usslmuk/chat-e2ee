@@ -80,13 +80,13 @@ export function extension(id: number, data: Uint8Array): Uint8Array {
 
 export function writeExtensions(list: Uint8Array[]): Uint8Array {
   const w = new Writer();
-  for (const e of list) w.u16(e.length).vec(e);
+  for (const e of list) w.vlen(e.length).vec(e);
   return w.out();
 }
 
 export function readExtensions(b: Buf): Uint8Array[] {
   const out: Uint8Array[] = [];
-  while (!b.done) out.push(b.take(b.u16()));
+  while (!b.done) out.push(b.take(b.vlen()));
   return out;
 }
 

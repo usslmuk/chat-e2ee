@@ -19,11 +19,13 @@ export type SenderData = {
 };
 
 export function writeSenderData(s: SenderData): Uint8Array {
-  return new Writer().u32(s.leaf).u32(s.generation).vec(s.guard).out();
+  return new Writer().u32(s.leaf).u32(s.generation).raw(s.guard).out();
 }
 
 export function readSenderData(b: Buf): SenderData {
-  return { leaf: b.u32(), generation: b.u32(), guard: b.vec() };
+  const leaf = b.u32();
+  const generation = b.u32();
+  return { leaf, generation, guard: b.take(4) };
 }
 
 function sample(ct: Uint8Array): Uint8Array {
@@ -38,18 +40,15 @@ export function senderDataKeys(senderDataSecret: Uint8Array, ct: Uint8Array): { 
   };
 }
 
-function guardNonce(key: Uint8Array, guard: Uint8Array): Uint8Array {
-  const g = gcm(key, new Uint8Array(NN)).encrypt(guard);
-  const out = new Uint8Array(NN);
-  out.set(g.slice(0, NN));
+function guardNonce(ratchet: Uint8Array, guard: Uint8Array): Uint8Array {
+  const out = Uint8Array.from(ratchet);
+  for (let i = 0; i < 4 && i < NN; i++) out[i] ^= guard[i];
   return out;
 }
 
 function xorNonce(ratchet: Uint8Array, key: Uint8Array, guard: Uint8Array): Uint8Array {
-  const g = guardNonce(key, guard);
-  const out = new Uint8Array(NN);
-  for (let i = 0; i < NN; i++) out[i] = ratchet[i] ^ g[i];
-  return out;
+  void key;
+  return guardNonce(ratchet, guard);
 }
 
 export function privateContentAad(groupId: Uint8Array, epoch: number, ctype: number, auth: Uint8Array): Uint8Array {
@@ -122,4 +121,48 @@ export function membershipTag(membershipKey: Uint8Array, tbs: Uint8Array, auth: 
 
 export function confirmationTag(confirmKey: Uint8Array, confirmed: Uint8Array): Uint8Array {
   return hmac(sha256, confirmKey, confirmed);
+}
+
+export function authData(signature: Uint8Array, confirmation: Uint8Array | null): Uint8Array {
+  const w = new Writer().vec(signature);
+  if (confirmation) w.vec(confirmation);
+  return w.out();
+}
+
+export type Public = {
+  version: number;
+  ctype: number;
+  framed: Uint8Array;
+  body: Uint8Array;
+  authSig: Uint8Array;
+  confirmation: Uint8Array | null;
+  signature: Uint8Array;
+};
+
+export function sealPublic(
+  version: number,
+  ctype: number,
+  framed: Uint8Array,
+  body: Uint8Array,
+  authSig: Uint8Array,
+  confirmation: Uint8Array | null,
+  signature: Uint8Array,
+): Uint8Array {
+  const w = new Writer().u16(version).u16(WIRE_PUBLIC).u8(ctype);
+  if (ctype === APPLICATION) w.vec(body);
+  else w.raw(body);
+  return w.raw(authData(authSig, confirmation)).vec(signature).out();
+}
+
+export function openPublic(b: Buf): Public {
+  const version = b.u16();
+  b.u16();
+  const ctype = b.u8();
+  const framedStart = b.pos;
+  const body = ctype === APPLICATION ? b.vec() : b.rest();
+  const framed = b.slice(framedStart, b.pos);
+  const authSig = b.vec();
+  const confirmation = ctype === COMMIT ? b.vec() : null;
+  const signature = b.vec();
+  return { version, ctype, framed, body, authSig, confirmation, signature };
 }

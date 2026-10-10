@@ -7,10 +7,12 @@ export const BLANK = 0;
 
 export type Leaf = {
   enc: Uint8Array;
-  sig: Uint8Array;
+  sigKey: Uint8Array;
   cred: Uint8Array;
   ph: Uint8Array | null;
   unmerged: number[];
+  tbs: Uint8Array;
+  signature: Uint8Array;
 };
 
 export type Par = {

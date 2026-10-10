@@ -54,10 +54,12 @@ export function makeSelf(): Self {
 
 export function makeKeyPackage(self: Self): { pkg: Uint8Array; init: K.Key; leaf: F.Leaf } {
   const init = K.keygen();
-  const base: F.Leaf = { enc: init.pub, sig: EMPTY, cred: self.sigPub, source: F.SRC_KEY_PACKAGE, parentHash: null };
-  const leaf = signLeaf(self, base, null, 0);
+  const base = { enc: init.pub, sigKey: self.sigPub, cred: self.sigPub, source: F.SRC_KEY_PACKAGE, parentHash: null as Uint8Array | null };
+  const tbs = F.leafTbsOf(base);
+  const signature = ed25519.sign(F.tbsLabel("LeafNodeTBS", tbs), self.sigPriv);
+  const leaf: F.Leaf = { ...base, tbs, signature };
   const now = Math.floor(Date.now() / 1000);
-  const pkg = F.keyPackage(self.sigPub, init.pub, now, now + 86400, leaf.sig, (m) => ed25519.sign(m, self.sigPriv));
+  const pkg = F.keyPackage(self.sigPub, init.pub, now, now + 86400, signature, (m) => ed25519.sign(m, self.sigPriv));
   return { pkg, init, leaf };
 }
 
@@ -65,7 +67,7 @@ export function leafFromPackage(pkg: Uint8Array): F.Leaf {
   const b = new Buf(pkg);
   const body = b.vec();
   const sig = b.vec();
-  const leafSig = b.vec();
+  const signature = b.vec();
   const inner = new Buf(body);
   inner.u16();
   const sigPub = inner.vec();
@@ -74,18 +76,22 @@ export function leafFromPackage(pkg: Uint8Array): F.Leaf {
   inner.u64();
   inner.u64();
   if (!ed25519.verify(sig, F.tbsLabel("KeyPackageTBS", body), sigPub)) throw new Error("bad key package signature");
-  const leaf: F.Leaf = { enc, sig: leafSig, cred: sigPub, source: F.SRC_KEY_PACKAGE, parentHash: null };
+  const base = { enc, sigKey: sigPub, cred: sigPub, source: F.SRC_KEY_PACKAGE, parentHash: null as Uint8Array | null };
+  const leaf: F.Leaf = { ...base, tbs: F.leafTbsOf(base), signature };
   if (!verifyLeaf(leaf, null, 0)) throw new Error("bad key package leaf signature");
   return leaf;
 }
 
 export function signLeaf(self: Self, v: F.Leaf, groupId: Uint8Array | null, index: number): F.Leaf {
-  return { ...v, sig: ed25519.sign(F.tbsLabel("LeafNodeTBS", F.leafTbs(v, groupId, index, 0, 0)), self.sigPriv) };
+  const tbs = F.leafTbsOf(v);
+  void groupId;
+  void index;
+  return { ...v, tbs, signature: ed25519.sign(F.tbsLabel("LeafNodeTBS", F.leafTbs({ ...v, tbs }, groupId, index)), self.sigPriv) };
 }
 
 export function verifyLeaf(v: F.Leaf, groupId: Uint8Array | null, index: number): boolean {
   try {
-    return ed25519.verify(v.sig, F.tbsLabel("LeafNodeTBS", F.leafTbs(v, groupId, index, 0, 0)), v.cred);
+    return ed25519.verify(v.signature, F.tbsLabel("LeafNodeTBS", F.leafTbs(v, groupId, index)), v.cred);
   } catch {
     return false;
   }
@@ -111,10 +117,24 @@ function clone(t: T.TNode[]): T.TNode[] {
 function toLeafNode(v: T.Leaf): F.Leaf {
   return {
     enc: v.enc,
-    sig: v.sig,
+    sigKey: v.sigKey,
     cred: v.cred,
     source: v.ph === null ? F.SRC_KEY_PACKAGE : F.SRC_COMMIT,
     parentHash: v.ph,
+    tbs: v.tbs,
+    signature: v.signature,
+  };
+}
+
+function toTree(v: F.Leaf, unmerged: number[] = []): T.Leaf {
+  return {
+    enc: v.enc,
+    sigKey: v.sigKey,
+    cred: v.cred,
+    ph: v.parentHash,
+    unmerged,
+    tbs: v.tbs,
+    signature: v.signature,
   };
 }
 
@@ -206,7 +226,7 @@ export function applyGroupInfo(
     if (T.level(i) === 0) {
       const l = F.readLeafNode(nb);
       if (!verifyLeaf(l, info.groupId, leafSlot)) throw new Error("bad leaf signature");
-      t[i] = { k: 1, v: { enc: l.enc, sig: l.sig, cred: l.cred, ph: l.parentHash, unmerged: [] } };
+      t[i] = { k: 1, v: toTree(l) };
       leafSlot++;
     } else {
       const p = F.readParentNode(nb);
@@ -261,7 +281,7 @@ function parentNodeHash(node: T.TNode, l: Uint8Array, r: Uint8Array): Uint8Array
 
 export function create(id: Uint8Array, self: Self, pkg: Uint8Array, init: K.Key): Group {
   const leaf = signLeaf(self, leafFromPackage(pkg), null, 0);
-  const t: T.TNode[] = [{ k: 1, v: { enc: leaf.enc, sig: leaf.sig, cred: leaf.cred, ph: null, unmerged: [] } }];
+  const t: T.TNode[] = [{ k: 1, v: toTree(leaf) }];
   const g: Group = {
     id,
     epoch: 0,
@@ -372,7 +392,7 @@ function pskSecretOf(psks: { secret: Uint8Array; id: Uint8Array; nonce: Uint8Arr
 }
 
 export function leafToPackage(v: T.Leaf): Uint8Array {
-  return F.keyPackage(v.cred, v.enc, 0, 0, v.sig, () => v.sig);
+  return F.keyPackage(v.cred, v.enc, 0, 0, v.signature, () => v.signature);
 }
 
 export type OutShare = { forLeaf: number; node: number; kemOutput: Uint8Array; ciphertext: Uint8Array };
@@ -434,7 +454,7 @@ export function applyRemote(g: Group, wire: Remote): Group {
   let at = g.n;
   for (const l of fresh) {
     while (t.length < T.alloc(n + 1)) t.push({ k: 0 });
-    t[2 * at] = { k: 1, v: { enc: l.enc, sig: l.sig, cred: l.cred, ph: null, unmerged: [] } };
+    t[2 * at] = { k: 1, v: toTree(l) };
     at++;
   }
   n += fresh.length;
@@ -466,7 +486,7 @@ export function applyRemote(g: Group, wire: Remote): Group {
       const nd = t[fdp[i]];
       if (nd.k === 2) nd.v.ph = phs[i];
     }
-    t[2 * fr.sender] = { k: 1, v: { enc: path.leaf.enc, sig: path.leaf.sig, cred: path.leaf.cred, ph: phs[0] ?? EMPTY, unmerged: [] } };
+    t[2 * fr.sender] = { k: 1, v: toTree(path.leaf) };
   }
 
   const ctx = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, ext);
@@ -691,8 +711,8 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
     if (old.k !== 1) throw new Error("update of a blank leaf");
     const fresh = K.keygen();
     updatedPriv.set(2 * l, fresh.priv);
-    const node = signLeaf(g.self, { enc: fresh.pub, sig: EMPTY, cred: g.self.sigPub, source: F.SRC_UPDATE, parentHash: null }, g.id, l);
-    t[2 * l] = { k: 1, v: { enc: node.enc, sig: node.sig, cred: node.cred, ph: null, unmerged: [] } };
+    const node = signLeaf(g.self, { enc: fresh.pub, sigKey: g.self.sigPub, cred: g.self.sigPub, source: F.SRC_UPDATE, parentHash: null, tbs: EMPTY, signature: EMPTY }, g.id, l);
+    t[2 * l] = { k: 1, v: toTree(node) };
     proposals.push({ t: F.UPDATE, pkg: writeLeafNode(node) });
   }
   const pskIds = (opts.psks ?? []).map((p) => writePskId({ t: P.PSK_EXTERNAL, id: p.id, nonce: p.nonce ?? P.freshNonce() }));
@@ -706,7 +726,7 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
   while (t.length < T.alloc(n)) t.push({ k: 0 });
   let at = g.n;
   for (const l of fresh) {
-    t[2 * at] = { k: 1, v: { enc: l.enc, sig: l.sig, cred: l.cred, ph: null, unmerged: [] } };
+    t[2 * at] = { k: 1, v: toTree(l) };
     at++;
   }
   const leafSecret = K.fresh();
@@ -729,14 +749,14 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
   const leafPair = K.derivePair(X.nodeSecret(chain[0]));
   const leaf = signLeaf(
     g.self,
-    { enc: leafPair.pub, sig: EMPTY, cred: g.self.sigPub, source: F.SRC_COMMIT, parentHash: phs[0] ?? EMPTY },
+    { enc: leafPair.pub, sigKey: g.self.sigPub, cred: g.self.sigPub, source: F.SRC_COMMIT, parentHash: phs[0] ?? EMPTY, tbs: new Uint8Array(0), signature: EMPTY },
     g.id,
     g.me,
   );
   for (let i = 0; i < fdp.length; i++) {
     t[fdp[i]] = { k: 2, v: { enc: encs[i], sig: EMPTY, ph: phs[i], unmerged: [] } };
   }
-  t[2 * g.me] = { k: 1, v: { enc: leaf.enc, sig: leaf.sig, cred: leaf.cred, ph: phs[0] ?? EMPTY, unmerged: [] } };
+  t[2 * g.me] = { k: 1, v: toTree(leaf) };
   const provisional = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, writeExtensions(opts.extensions ?? []));
   const label = F.tbsLabel("UpdatePathNode", provisional);
   const out: OutShare[] = [];
@@ -776,3 +796,4 @@ function parentHashChain(t: T.TNode[], fdp: number[], encs: Uint8Array[], n: num
   }
   return out;
 }
+

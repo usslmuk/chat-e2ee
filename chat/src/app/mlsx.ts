@@ -12,7 +12,7 @@ import { b64d, b64e } from "./lib/crypto";
 
 const enc = new TextEncoder();
 
-export type NodeSave = { k: number; enc?: string; sig?: string; cred?: string; ph?: string };
+export type NodeSave = { k: number; enc?: string; sig?: string; cred?: string; ph?: string; tbs?: string; lf?: string };
 
 export type Saved = {
   gid: string;
@@ -81,7 +81,7 @@ export function packNodes(g: G.Group): NodeSave[] {
   for (const n of g.t) {
     if (n.k === 1) {
       const v = n.v as T.Leaf;
-      out.push({ k: 1, enc: b64e(v.enc), sig: b64e(v.sig), cred: b64e(v.cred), ph: v.ph ? b64e(v.ph) : "" });
+      out.push({ k: 1, enc: b64e(v.enc), sig: b64e(v.sigKey), cred: b64e(v.cred), ph: v.ph ? b64e(v.ph) : "", tbs: b64e(v.tbs), lf: b64e(v.signature) });
     } else if (n.k === 2) {
       const v = n.v as T.Par;
       out.push({ k: 2, enc: b64e(v.enc), sig: b64e(v.sig), ph: b64e(v.ph) });
@@ -123,7 +123,7 @@ export function save(g: G.Group): Saved {
 export function load(s: Saved): G.Group {
   const signer: G.Self = { sigPriv: b64d(s.signPriv), sigPub: b64d(s.signPub) };
   const t: T.TNode[] = s.nodes.map((n) => {
-    if (n.k === 1) return { k: 1, v: { enc: b64d(n.enc!), sig: b64d(n.sig!), cred: b64d(n.cred!), ph: n.ph ? b64d(n.ph) : null, unmerged: [] } };
+    if (n.k === 1) return { k: 1, v: { enc: b64d(n.enc!), sigKey: b64d(n.sig!), cred: b64d(n.cred!), ph: n.ph ? b64d(n.ph) : null, unmerged: [], tbs: b64d(n.tbs ?? ""), signature: b64d(n.lf ?? "") } };
     if (n.k === 2) return { k: 2, v: { enc: b64d(n.enc!), sig: b64d(n.sig!), ph: b64d(n.ph!), unmerged: [] } };
     return { k: 0 };
   });

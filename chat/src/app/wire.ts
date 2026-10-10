@@ -11,7 +11,7 @@ const KEY = "hW4rTb9nQ2xVmK7pLd3sYc8JfRg5uAe1iOz0N6wMq";
 const SELF = "vB3xNp7kLq2rTm9wYc4hJd8Fs1uGz5aEe0iOzXnQ";
 const STAMP = "pL6nZc3wVb9mTq2Xk7Rd4hJs1uGp5aEe0iOzYnQbMwTvC";
 const OFFER = "kR9tWq2LmXb7nVz4cYh8Jd3Fs1uGp5aEe0iOzXnQbMwTvCy";
-const BUILD = "10";
+const BUILD = "11";
 
 export function stamp(): void {
   if (localStorage.getItem(STAMP) === BUILD) return;
