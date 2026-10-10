@@ -1,5 +1,6 @@
 import { MongoClient, Db } from "mongodb";
 import { config } from "./env";
+import { createHmac } from "crypto";
 import path from "path";
 import C from "../../../../fields.json";
 
@@ -35,10 +36,36 @@ function num(k: string, min: number, max: number): number {
 
 const prod = process.env.CHAT_DEV !== "1";
 
+function optional(k: string): string {
+  const v = process.env[k];
+  return v ? v.trim() : "";
+}
+
+function turn(): { url: string; urls: string[]; secret: string } {
+  const url = optional("TURN_URL");
+  const s = optional("TURN_SECRET");
+  if (!url && !s) return { url: "", urls: [], secret: "" };
+  if (!url) throw new Error("TURN_SECRET is set but TURN_URL is missing");
+  if (!s) throw new Error("TURN_URL is set but TURN_SECRET is missing");
+  if (s.length < 16) throw new Error("TURN_SECRET must be at least 16 bytes");
+  const urls = url.split(",").map((x) => x.trim()).filter(Boolean);
+  if (urls.length === 0) throw new Error("TURN_URL has no usable urls");
+  for (const u of urls) {
+    if (!/^turns?:[a-z0-9.-]+(:\d+)?$/i.test(u)) {
+      throw new Error("TURN_URL entries must look like turn:host:port or turns:host:port");
+    }
+  }
+  return { url, urls, secret: s };
+}
+
+const turnCfg = turn();
+
 export const env = {
   mongo: must("MONGO"),
   pepper: secret.pepper,
   codePepper: secret.codePepper,
+  turnUrls: turnCfg.urls,
+  turnSecret: turnCfg.secret,
   maxMsg: num("MAX_MSG_BYTES", 1024, 10485760),
   winMs: num("RATE_WINDOW_MS", 1000, 3600000),
   maxRate: num("RATE_MAX", 1, 100000),
@@ -47,6 +74,16 @@ export const env = {
   blobTtlH: num("BLOB_TTL_HOURS", 1, 87600),
   idleTtlH: num("IDLE_TTL_HOURS", 1, 87600)
 };
+
+export function turnEnabled(): boolean {
+  return env.turnUrls.length > 0;
+}
+
+export function turnCredential(ttlSeconds: number): { username: string; credential: string } {
+  const username = String(Math.floor(Date.now() / 1000) + ttlSeconds);
+  const mac = createHmac("sha1", env.turnSecret).update(username).digest();
+  return { username, credential: mac.toString("base64") };
+}
 
 export function tokenExpiry() {
   return new Date(Date.now() + env.tokenTtlH * 3600 * 1000);
@@ -67,7 +104,11 @@ async function setup(d: Db) {
     d.collection("wel").createIndex({ [C.wel.exp]: 1 }, { expireAfterSeconds: 0 }),
     d.collection("inv").createIndex({ [C.inv.h]: 1 }, { unique: true }),
     d.collection("inv").createIndex({ [C.inv.exp]: 1 }, { expireAfterSeconds: 0 }),
-    d.collection("msgs").createIndex({ [C.msgs.g]: 1, [C.msgs.sq]: 1 }),
+    d.collection("msgs").createIndex(
+      { [C.msgs.g]: 1, [C.msgs.id]: 1 },
+      { unique: true, partialFilterExpression: { [C.msgs.g]: { $type: "string" } } }
+    ),
+    d.collection("msgs").createIndex({ [C.msgs.g]: 1, _id: -1 }),
     d.collection("msgs").createIndex({ [C.msgs.exp]: 1 }, { expireAfterSeconds: 0 }),
     d.collection("reac").createIndex({ [C.reac.g]: 1 }),
     d.collection("reac").createIndex({ [C.reac.exp]: 1 }, { expireAfterSeconds: 0 }),
@@ -97,9 +138,12 @@ export function getDb(): Promise<Db> {
       const d = c.db("e2ee");
       await d.command({ ping: 1 });
       return setup(d);
-    })().catch(() => {
+    })().catch((e: unknown) => {
       p = null;
-      throw new DbDown("database unreachable");
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[db] connect failed", e);
+      }
+      throw new DbDown("database unreachable: " + (e instanceof Error ? e.message : String(e)));
     });
   }
   return p;

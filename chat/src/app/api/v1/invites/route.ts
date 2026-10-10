@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     return mm.indexOf(me.who) >= 0;
   })();
   if (!found) return Response.json({ error: "no link" }, { status: 404 });
-  const code = hex(8);
+  const code = hex(12);
   await (await getDb()).collection("inv").insertOne({
     [C.inv.h]: hashCode(code),
     [C.inv.g]: g,

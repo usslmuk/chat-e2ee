@@ -3,6 +3,8 @@ import { authed, deny, hashCode, need, throttled } from "../../../../lib/auth";
 import { tell } from "../../../../lib/push";
 import C from "../../../../../../../fields.json";
 
+export const ROOM_CAP = 2;
+
 export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> }) {
   const slow = throttled(req);
   if (slow) return slow;
@@ -19,8 +21,8 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "no link" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm.indexOf(me.who) >= 0) return Response.json({ ok: true, mm, sq: Number(row[C.grps.sq] || 0) });
-  if (mm.length >= 200) return Response.json({ error: "full" }, { status: 409 });
+  if (mm.indexOf(me.who) >= 0) return Response.json({ ok: true, mm });
+  if (mm.length >= ROOM_CAP) return Response.json({ error: "full", cap: ROOM_CAP }, { status: 409 });
   const filter: Record<string, unknown> = { [C.grps.g]: g, [C.grps.mm]: { $ne: me.who } };
   const update: Record<string, unknown> = {};
   update["$push"] = { [C.grps.mm]: me.who };
@@ -31,7 +33,6 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   return Response.json({
     ok: true,
     mm: now,
-    sq: Number(row[C.grps.sq] || 0),
     ep: res && res[C.grps.ep] !== undefined ? Number(res[C.grps.ep]) : Number(row[C.grps.ep] || 0) + 1
   });
 }

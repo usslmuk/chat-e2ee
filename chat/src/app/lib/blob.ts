@@ -1,6 +1,12 @@
-import { concat, decipher, derive, gcmDec, gcmEnc, genKey32, seal, open, chacha } from "./crypto";
+import { concat, derive, genKey32, seal, open } from "./crypto";
 
 const SZ = [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
+
+function jitter(max: number): number {
+  const b = new Uint32Array(1);
+  crypto.getRandomValues(b);
+  return b[0] % max;
+}
 
 export function sizeOf(n: number): number {
   let c = SZ[SZ.length - 1];
@@ -10,7 +16,7 @@ export function sizeOf(n: number): number {
       break;
     }
   }
-  return c + Math.floor(Math.random() * Math.max(Math.floor(c / 8), 1));
+  return c + jitter(Math.max(Math.floor(c / 8), 1));
 }
 
 function maskIn(pt: Uint8Array): Uint8Array {
@@ -36,7 +42,9 @@ export function pack(pt: Uint8Array): Uint8Array {
   const out = new Uint8Array(target);
   new DataView(out.buffer).setUint32(0, masked.length);
   out.set(masked, 4);
-  for (let i = masked.length + 4; i < target; i++) out[i] = Math.floor(Math.random() * 256);
+  const tail = new Uint8Array(target - masked.length - 4);
+  crypto.getRandomValues(tail);
+  out.set(tail, masked.length + 4);
   return out;
 }
 
@@ -54,28 +62,4 @@ export function keyedSeal(k: Uint8Array, pt: Uint8Array, aad: Uint8Array): Uint8
 export function keyedOpen(k: Uint8Array, box: Uint8Array, aad: Uint8Array): Uint8Array {
   const n = box.slice(0, 12);
   return open(k, n, box.slice(12), aad);
-}
-
-const rkInfo = "r6Wd3Qf8Tz2Mn";
-
-export function rkSeal(rk: Uint8Array, pt: Uint8Array, aad: Uint8Array): Uint8Array {
-  const k = derive(rk, rkInfo, 64);
-  const n1 = k.slice(24, 36);
-  const n2 = k.slice(12, 24);
-  const inner = gcmEnc(k.slice(0, 32), n1, pt, aad);
-  const outer = concat(n2, chacha(k.slice(32, 64), n2, inner, aad));
-  k.fill(0);
-  return outer;
-}
-
-export function rkOpen(rk: Uint8Array, box: Uint8Array, aad: Uint8Array): Uint8Array {
-  const k = derive(rk, rkInfo, 64);
-  const n1 = k.slice(24, 36);
-  const n2 = k.slice(12, 24);
-  if (box.length < 32) throw new Error("short box");
-  for (let i = 0; i < 12; i++) if (box[i] !== n2[i]) throw new Error("wrong room");
-  const inner = decipher(k.slice(32, 64), n2, box.slice(12), aad);
-  const pt = gcmDec(k.slice(0, 32), n1, inner, aad);
-  k.fill(0);
-  return pt;
 }

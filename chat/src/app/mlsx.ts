@@ -311,7 +311,7 @@ export function openApp(g: G.Group, blob: Uint8Array): { body: Uint8Array; leaf:
   try {
     return M.openPrivate(g.id, g.epoch, M.APPLICATION, new Uint8Array(0), enc, ct, g.secrets.sender, (leaf, gen) => {
       if (leaf < 0 || leaf >= g.n) throw new Error("bad leaf");
-      return X.senderRatchetKey(X.ratchets(senderSeed(g, leaf)).app, gen);
+      return X.ratchetAt(b64e(g.id), leaf, senderSeed(g, leaf), gen);
     });
   } catch (e) {
     return null;
@@ -363,12 +363,8 @@ export function ratchetFrom(pathSecret: Uint8Array): Uint8Array {
   return X.nodeSecret(pathSecret);
 }
 
-export function ratchetsFor(seed: Uint8Array): { hs: S.Ratchet; app: S.Ratchet } {
-  return X.ratchets(seed);
-}
-
-export function keyAt(r: S.Ratchet, gen: number): { key: Uint8Array; nonce: Uint8Array } {
-  return X.senderRatchetKey(r, gen);
+export function forgetRatchets(room: string): void {
+  X.forgetRatchets(room);
 }
 export function encode(v: Uint8Array): string {
   return b64e(v);

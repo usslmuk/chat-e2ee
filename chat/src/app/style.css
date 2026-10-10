@@ -56,7 +56,9 @@ html, body { margin: 0; height: 100%; background: #1e1f22; color: #dbdee1; font-
 .rBr3A span { cursor: pointer; width: 28px; height: 28px; border-radius: 4px; font-size: 16px; display: flex; align-items: center; justify-content: center; color: #b5bac1; transition: background .1s; }
 .rBr3A span:hover { background: #313338; }
 .rBr3A .rIc7S { color: #949ba4; }
-.rBr3A .rIc7S:hover { color: #f23f43; }
+.rBr3A .rIc7S:hover { color: #dbdee1; background: #313338; }
+.rBr3A .rmX7T { margin-left: 2px; border-left: 1px solid #2b2d31; border-radius: 0 4px 4px 0; }
+.rBr3A .rmX7T:hover { color: #f23f43; }
 .eMw4E { margin: 0 16px 8px; animation: xr9wx .16s ease-out; transform-origin: bottom left; position: relative; z-index: 6; }
 .xV2pQ { position: fixed; inset: 0; z-index: 5; }
 .eMw4E.qZ4oU { animation: kJ8sD .15s ease-in forwards; }
@@ -81,7 +83,7 @@ html, body { margin: 0; height: 100%; background: #1e1f22; color: #dbdee1; font-
 .XcZPL { margin: 0 16px 16px; background: #383a40; border-radius: 8px; display: flex; padding: 10px; gap: 8px; transition: box-shadow .15s; }
 .XcZPL:focus-within { box-shadow: 0 0 0 1px #5865f2; }
 .XcZPL input { flex: 1; background: transparent; border: 0; color: #dbdee1; outline: none; }
-.XcZPL textarea { flex: 1; background: transparent; border: 0; color: #dbdee1; outline: none; resize: none; font: inherit; max-height: 120px; }
+.XcZPL textarea { flex: 1; background: transparent; border: 0; color: #dbdee1; outline: none; resize: none; font: inherit; max-height: 120px; align-self: center; padding: 8px 0; line-height: 1.4; }
 .GOfVa { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; flex: 1; position: relative; }
 .j0aiJ.dmbYY .GOfVa { align-items: flex-end; }
 .WisiF { width: 240px; background: #2b2d31; padding: 16px 8px; }

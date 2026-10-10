@@ -12,7 +12,7 @@ export function hashToken(token: string) {
 }
 
 export function hashCode(code: string) {
-  return createHash("sha256").update(code + env.pepper).digest("hex");
+  return createHash("sha256").update(code + env.codePepper).digest("hex");
 }
 
 export function same(a: string, b: string) {
@@ -26,18 +26,27 @@ export function need(v: unknown, max: number) {
   return typeof v === "string" && v.length > 0 && v.length <= max;
 }
 
-const bursts = new Map<string, { n: number; reset: number }>();
+const BURST = 40;
+const REFILL_MS = 10000;
+const bursts = new Map<string, { tokens: number; last: number }>();
 
 export function guard(who: string) {
   const now = Date.now();
-  let h = bursts.get(who);
-  if (!h || now > h.reset) {
-    if (bursts.size > 20000) bursts.clear();
-    h = { n: 0, reset: now + 10000 };
-    bursts.set(who, h);
+  let b = bursts.get(who);
+  if (!b) {
+    if (bursts.size > 20000) {
+      const stale = now - REFILL_MS * 2;
+      for (const [k, v] of bursts) if (v.last < stale) bursts.delete(k);
+      if (bursts.size > 20000) bursts.clear();
+    }
+    bursts.set(who, { tokens: BURST, last: now });
+    return null;
   }
-  h.n++;
-  if (h.n > 60) return Response.json({ error: "slow down" }, { status: 429 });
+  const refill = ((now - b.last) / REFILL_MS) * BURST;
+  b.tokens = Math.min(BURST, b.tokens + refill);
+  b.last = now;
+  if (b.tokens < 1) return Response.json({ error: "slow down" }, { status: 429 });
+  b.tokens -= 1;
   return null;
 }
 

@@ -2,10 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Check, Copy, Download, FileText, Plus, Smile, Trash2, X as CloseIcon } from "lucide-react";
-import { bundle, delLink, delMsg, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
+import { bundle, delLink, delMsg, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, ice, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
 import { unpack } from "./lib/blob";
 import { stamp } from "./lib/time";
-import { b64d, b64e, edSign, edVerify, genKeys, pairOpen, pairSeal, safety } from "./lib/crypto";
+import { b64d, b64e, ctId, edSign, edVerify, genKeys, safety } from "./lib/crypto";
 import * as W from "./wire";
 import * as X from "./mlsx";
 import * as P2P from "./p2p";
@@ -13,7 +13,7 @@ import * as P2P from "./p2p";
 const EmoPicker = dynamic(() => import("./emo"), { ssr: false });
 
 type Att = { id: string; name: string; mime: string; size: number };
-type Msg = { id: string; who: string; room: string; text: string; mine: boolean; sq: number; at: number; att?: Att };
+type Msg = { id: string; who: string; room: string; text: string; mine: boolean; at: number; att?: Att };
 type Mark = { id: string; mid: string; who: string; emo: string; mine: boolean };
 type Chan = { sid: string; link: string; members: string[]; unread: number };
 type Sess = {
@@ -174,6 +174,17 @@ export default function Shell() {
   const [sel, setSel] = useState("");
 
   const booted = useRef(false);
+  const seen = useRef<Set<string>>(new Set());
+  const seenQ = useRef<string[]>([]);
+
+  function remember(id: string) {
+    seen.current.add(id);
+    seenQ.current.push(id);
+    if (seenQ.current.length > 5000) {
+      const drop = seenQ.current.splice(0, 1000);
+      for (const d of drop) seen.current.delete(d);
+    }
+  }
   const viewRef = useRef("boot");
   useEffect(() => {
     viewRef.current = view;
@@ -389,10 +400,14 @@ export default function Shell() {
   function goLive() {
     if (live.current) clearInterval(live.current);
     connect();
-    tick();
+    const step = () => {
+      const s = ref.current.sess;
+      const ready = s ? fresh(s) : Promise.resolve();
+      return ready.then(() => tick());
+    };
     const loop = () => {
       live.current = window.setTimeout(() => {
-        tick().then(loop, loop);
+        step().then(loop, loop);
       }, eager() ? 1200 + Math.random() * 800 : 20000 + Math.random() * 10000);
     };
     loop();
@@ -406,7 +421,8 @@ export default function Shell() {
     if (n === 0) return true;
     const ch = s.chans.find((x) => x.sid === r);
     if (!ch) return false;
-    if (n < ch.members.length) return true;
+    const want = ch.members.filter((x) => x !== s.who).length;
+    if (n < want) return true;
     for (const who of ch.members) {
       if (who === s.who) continue;
       const pb = s.pbs[who];
@@ -426,7 +442,6 @@ export default function Shell() {
       g,
       s.who,
       (to, body) => {
-        void to;
         const ss = ref.current.sess;
         if (!ss) return;
         const kind = String((body as any).kind || "");
@@ -436,18 +451,20 @@ export default function Shell() {
       () => {},
       (from, payload) => {
         const ct = b64e(payload);
+        const id = ctId(ct);
+        const ss = ref.current.sess;
+        if (!ss) return;
+        if (seen.current.has(id)) return;
         const opened = W.open(g, ct);
         if (!opened || opened.who === s.who) return;
         const o = JSON.parse(opened.text);
-        const ss = ref.current.sess;
-        if (!ss) return;
+        remember(id);
         addMsg(ss, {
-          id: rid(16),
+          id,
           who: String(o.w || opened.who),
           room: g,
           text: String(o.t || ""),
           mine: false,
-          sq: 0,
           at: Number(o.d) || Date.now()
         });
       },
@@ -491,7 +508,27 @@ export default function Shell() {
     }
   }
 
-  async function refreshPresence(s: Sess) {
+  async function loadIce(s: Sess) {
+  try {
+    const r = await ice(s.token);
+    if (Array.isArray(r.ice) && r.ice.length > 0) P2P.setIce(r.ice);
+    turnOn = r.turn === true;
+    iceAt = Date.now();
+  } catch (e) {}
+}
+
+const ICE_LIFE = 45 * 60 * 1000;
+let iceAt = 0;
+let turnOn = false;
+
+function fresh(s: Sess): Promise<void> {
+  if (iceAt === 0) return loadIce(s);
+  if (!turnOn) return Promise.resolve();
+  if (Date.now() - iceAt < ICE_LIFE) return Promise.resolve();
+  return loadIce(s);
+}
+
+async function refreshPresence(s: Sess) {
     const rooms = s.chans.map((c) => c.sid).filter((x) => x.length > 0);
     if (rooms.length === 0) return;
     try {
@@ -602,6 +639,7 @@ export default function Shell() {
         if (X.leafOf(cur, pb.sig) >= 0) continue;
         const out = W.addMembers(g, pb.kp);
         W.saveGroup(g, out.group);
+        W.forgetRatchets(g);
         cur = out.group;
         moved = true;
         if (out.welcome) await putWelcome(s.token, g, who, JSON.stringify(X.packWelcome(out.welcome)));
@@ -679,12 +717,12 @@ export default function Shell() {
     }
   }
 
-  function withAtt(id: string, who: string, room: string, o: any, mine: boolean, sq: number): Msg {
+  function withAtt(id: string, who: string, room: string, o: any, mine: boolean): Msg {
     const at = Number(o.d) || Date.now();
     if (o.a && o.a.id) {
-      return { id, who, room, text: String(o.t || ""), mine, sq, at, att: { id: String(o.a.id), name: String(o.a.n), mime: String(o.a.m), size: Number(o.a.s) } };
+      return { id, who, room, text: String(o.t || ""), mine, at, att: { id: String(o.a.id), name: String(o.a.n), mime: String(o.a.m), size: Number(o.a.s) } };
     }
-    return { id, who, room, text: String(o.t || ""), mine, sq, at };
+    return { id, who, room, text: String(o.t || ""), mine, at };
   }
 
   function addMsg(s: Sess, m: Msg) {
@@ -704,7 +742,20 @@ export default function Shell() {
       const s = ref.current.sess;
       if (!s) return;
       const rooms = s.chans.map((c) => c.sid).filter((x) => x.length > 0);
-      const rows = pre || (await getMsgs(s.token, rooms)).msgs || [];
+      let rows: any[];
+      if (pre) {
+        rows = pre;
+      } else {
+        rows = [];
+        let cursor: string | null = null;
+        for (let page = 0; page < 25; page++) {
+          const r = await getMsgs(s.token, rooms, cursor);
+          const batch = r.msgs || [];
+          rows.push(...batch);
+          if (!r.more || !r.cursor || batch.length === 0) break;
+          cursor = r.cursor;
+        }
+      }
       let changed = false;
       for (const row of rows) {
         const g = String(row.g);
@@ -713,7 +764,8 @@ export default function Shell() {
         if (W.memberCount(g) === 0) continue;
         const o = await openBody(s, g, row);
         if (!o) continue;
-        addMsg(s, withAtt(String(row.id), o.who, g, { t: o.text, d: o.at, a: o.att }, o.who === s.who, Number(row.sq)));
+        addMsg(s, withAtt(String(row.id), o.who, g, { t: o.text, d: o.at, a: o.att }, o.who === s.who));
+        remember(String(row.id));
         changed = true;
       }
       if (changed) setSess({ ...s });
@@ -873,12 +925,10 @@ export default function Shell() {
     };
   }
 
-  function relay(g: string, who: string, tag: string, payload: Uint8Array) {
+  function relay(g: string, payload: Uint8Array) {
     const m = meshes.get(g);
     if (!m) return;
     P2P.spread(m, payload);
-    void who;
-    void tag;
   }
 
 
@@ -897,7 +947,7 @@ export default function Shell() {
         setView("code");
         return;
       }
-      setErr(e instanceof Error && (e as Error & { status?: number }).status === 409 ? "link is full, make a new one" : "wrong code");
+      setErr(e instanceof Error && (e as Error & { status?: number }).status === 409 ? "this chat already has two people, links are for one other person" : "wrong code");
       setView("code");
     }
   }
@@ -943,7 +993,8 @@ export default function Shell() {
         const at = Date.now();
         const body = text;
         const id = await post(s, ch, { w: s.who, t: body, d: at });
-        s.msgs.push({ id, who: s.who, room: ch.sid, text: body, mine: true, sq: 0, at });
+        s.msgs.push({ id, who: s.who, room: ch.sid, text: body, mine: true, at });
+        remember(id);
         setSess({ ...s });
         setText("");
         ping(false);
@@ -958,10 +1009,10 @@ export default function Shell() {
   async function post(s: Sess, ch: Chan, o: { w: string; t: string; d: number; a?: Att }): Promise<string> {
     const ct = W.seal(ch.sid, enc.encode(JSON.stringify({ w: o.w, t: o.t, d: o.d, a: o.a ? { id: o.a.id, n: o.a.name, m: o.a.mime, s: o.a.size } : null })));
     if (!ct) throw new Error("waiting for peer");
-    const id = rid(16);
+    const id = ctId(ct);
     const aad = enc.encode(ch.sid + "|" + id);
     const sg = b64e(edSign(b64d(s.keys.edPriv), enc.encode(ch.sid + "|" + id + "|" + o.w + "m")));
-    relay(ch.sid, s.who, "m", b64d(ct));
+    relay(ch.sid, b64d(ct));
     await postMsg(s.token, { id, g: ch.sid, ct, sg, bo: 0, exp: null });
     return id;
   }
@@ -988,7 +1039,7 @@ export default function Shell() {
           d: at,
           a: { id: blobId, name: f.name.slice(0, 100), mime: f.type || "bin", size: f.size }
         });
-        s.msgs.push({ id, who: s.who, room: ch.sid, text: caption, mine: true, sq: 0, at, att: { id: blobId, name: f.name.slice(0, 100), mime: f.type || "bin", size: f.size } });
+        s.msgs.push({ id, who: s.who, room: ch.sid, text: caption, mine: true, at, att: { id: blobId, name: f.name.slice(0, 100), mime: f.type || "bin", size: f.size } });
         setSess({ ...s });
         setText("");
         setPending(null);
@@ -1168,7 +1219,8 @@ export default function Shell() {
   const ch = ch0;
   const who = sess ? sess.who : "";
   const others = ch ? ch.members.filter((x) => x !== who) : [];
-  const ready = !!ch && W.memberCount(ch.sid) > 0 && W.memberCount(ch.sid) >= ch.members.length;
+  const ready = !!ch && W.memberCount(ch.sid) >= others.length && W.memberCount(ch.sid) > 0;
+  const full = !!ch && ch.members.length >= 2;
   const iAmLive = liveNow.indexOf(who) >= 0;
   const whoLabel = (id: string) => (id === who ? "you" : short(id));
 
@@ -1233,12 +1285,16 @@ export default function Shell() {
         {!ready ? (
           <div className="UdRtl">
             <div className="Ieofc" style={{ margin: "40px auto" }}>
-              <div className="nBzan">{ch && ch.members.length > 1 ? "syncing keys" : "waiting for peer"}</div>
-              <div className="wIE7B">{ch && ch.members.length > 1 ? "finishing the handshake" : "share this code, keys need 2 people here"}</div>
-              <div className="Kxztl">{link}</div>
-              <div className="TYj89">
-                <button className="ZwE4b td7Kx" onClick={() => doCopy(1)}>{copied === 1 ? "copied" : "copy code"}</button>
-              </div>
+              <div className="nBzan">{others.length ? "finishing the handshake" : "waiting for peer"}</div>
+              <div className="wIE7B">{others.length ? "exchanging keys, one moment" : "share this code with one other person"}</div>
+              {others.length ? null : (
+                <>
+                  <div className="Kxztl">{link}</div>
+                  <div className="TYj89">
+                    <button className="ZwE4b td7Kx" onClick={() => doCopy(1)}>{copied === 1 ? "copied" : "copy code"}</button>
+                  </div>
+                </>
+              )}
               {err ? <div className="vSx8V">{err}</div> : null}
             </div>
           </div>
@@ -1272,11 +1328,10 @@ export default function Shell() {
                   ) : null}
                   {hover === m.id ? (
                     <div className="rBr3A">
-                      <span onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Smile size={16} /></span>
-                      <span onClick={() => toggleMark(m.id, "â¤")}>â¤</span>
+                      <span onClick={() => toggleMark(m.id, "❤️")}>❤️</span>
                       <span onClick={() => { if (emoOpen === m.id) shutEmo(); else { setEmoOut(false); setEmoOpen(m.id); } }} className="rIc7S"><Plus size={16} /></span>
                       {m.mine ? (
-                        <span onClick={() => wipeMsg(m.id, m.room)} className="rIc7S"><Trash2 size={16} /></span>
+                        <span onClick={() => wipeMsg(m.id, m.room)} className="rIc7S rmX7T" title="delete message"><Trash2 size={16} /></span>
                       ) : null}
                     </div>
                   ) : null}
@@ -1331,7 +1386,7 @@ export default function Shell() {
             <button className="ZwE4b td7Kx" onClick={() => doCopy(2)}>{copied === 2 ? "copied" : "copy code"}</button>
           </div>
           <div className="TYj89">
-            <button className="ZwE4b td7Kx" onClick={newCode}>new code</button>
+            <button className="ZwE4b td7Kx" onClick={() => { if (full) makeLink(); else newCode(); }}>{full ? "new chat" : "new code"}</button>
           </div>
           {err ? <div className="vSx8V">{err}</div> : null}
           {isFunder ? (

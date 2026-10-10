@@ -1,17 +1,31 @@
 import { env } from "./db";
 
-const hits = new Map<string, { n: number; reset: number }>();
+type Bucket = { tokens: number; last: number };
+
+const buckets = new Map<string, Bucket>();
 
 export function limited(ip: string) {
   const now = Date.now();
-  const h = hits.get(ip);
-  if (!h || now > h.reset) {
-    if (hits.size > 5000) hits.clear();
-    hits.set(ip, { n: 1, reset: now + env.winMs });
+  let b = buckets.get(ip);
+  if (!b) {
+    if (buckets.size > 20000) evict(now);
+    buckets.set(ip, { tokens: env.maxRate, last: now });
     return false;
   }
-  h.n++;
-  return h.n > env.maxRate;
+  const refill = ((now - b.last) / env.winMs) * env.maxRate;
+  b.tokens = Math.min(env.maxRate, b.tokens + refill);
+  b.last = now;
+  if (b.tokens < 1) return true;
+  b.tokens -= 1;
+  return false;
+}
+
+function evict(now: number) {
+  const stale = now - env.winMs * 2;
+  for (const [k, v] of buckets) {
+    if (v.last < stale) buckets.delete(k);
+  }
+  if (buckets.size > 20000) buckets.clear();
 }
 
 export function ipOf(req: Request) {

@@ -23,7 +23,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   if (!row) return Response.json({ error: "bad commit" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm[0] !== me.who) return Response.json({ error: "bad commit" }, { status: 403 });
+  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad commit" }, { status: 403 });
   const exp = new Date(Date.now() + env.linkTtlH * 3600 * 1000);
   await db.collection("cms").updateOne(
     { [C.cms.g]: g, [C.cms.e]: ep },

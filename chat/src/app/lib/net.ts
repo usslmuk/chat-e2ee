@@ -78,11 +78,12 @@ export function bundle(token: string, who: string) {
 }
 
 export function postMsg(token: string, body: object) {
-  return call("/api/v1/msgs", token, "POST", body) as Promise<{ ok: boolean; sq: number }>;
+  return call("/api/v1/msgs", token, "POST", body) as Promise<{ ok: boolean }>;
 }
 
-export function getMsgs(token: string, rooms: string[]) {
-  return call("/api/v1/msgs?g=" + rooms.join(","), token, "GET") as Promise<{ msgs: any[] }>;
+export function getMsgs(token: string, rooms: string[], before?: string | null) {
+  const q = "/api/v1/msgs?g=" + rooms.join(",") + (before ? "&before=" + before : "");
+  return call(q, token, "GET") as Promise<{ msgs: any[]; more: boolean; cursor: string | null }>;
 }
 
 export function newLink(token: string, gi: string) {
@@ -158,6 +159,10 @@ export function signal(token: string, link: string, kind: string, body: unknown,
 export function online(token: string, rooms: string[]) {
   const q = rooms.join(",");
   return call("/api/v1/online?g=" + q, token, "GET") as Promise<{ on: string[] }>;
+}
+
+export function ice(token: string) {
+  return call("/api/v1/ice", token, "GET") as Promise<{ ice: unknown; turn: boolean }>;
 }
 
 export function delLink(token: string, g: string) {

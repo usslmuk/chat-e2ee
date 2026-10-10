@@ -1,6 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hmac } from "@noble/hashes/hmac.js";
-import { hkdf } from "@noble/hashes/hkdf.js";
 import { NH, NK, NN } from "./hpke.ts";
 
 function cat(...p: Uint8Array[]): Uint8Array {
@@ -21,11 +20,24 @@ function extract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
 }
 
 function expand(prk: Uint8Array, info: Uint8Array, len: number): Uint8Array {
-  return hkdf(sha256, prk, new Uint8Array(0), info, len);
+  const out: number[] = [];
+  let i = 1;
+  while (out.length < len) {
+    const t = hmac(sha256, prk, cat(info, new Uint8Array([i])));
+    for (const j of t) out.push(j);
+    i++;
+  }
+  return new Uint8Array(out.slice(0, len));
 }
 
 function vlen(v: Uint8Array): Uint8Array {
-  return new Uint8Array([(v.length >> 8) & 255, v.length & 255]);
+  const n = v.length;
+  if (n < 64) return new Uint8Array([n]);
+  if (n < 16384) return new Uint8Array([0x40 | ((n >> 8) & 63), n & 255]);
+  if (n < 1073741824) {
+    return new Uint8Array([0x80 | ((n >>> 24) & 63), (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+  }
+  throw new Error("vector too long");
 }
 
 export function expandWithLabel(secret: Uint8Array, label: string, ctx: Uint8Array, len: number): Uint8Array {

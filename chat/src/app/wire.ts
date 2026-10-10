@@ -11,7 +11,7 @@ const KEY = "hW4rTb9nQ2xVmK7pLd3sYc8JfRg5uAe1iOz0N6wMq";
 const SELF = "vB3xNp7kLq2rTm9wYc4hJd8Fs1uGz5aEe0iOzXnQ";
 const STAMP = "pL6nZc3wVb9mTq2Xk7Rd4hJs1uGp5aEe0iOzYnQbMwTvC";
 const OFFER = "kR9tWq2LmXb7nVz4cYh8Jd3Fs1uGp5aEe0iOzXnQbMwTvCy";
-const BUILD = "9";
+const BUILD = "10";
 
 export function stamp(): void {
   if (localStorage.getItem(STAMP) === BUILD) return;
@@ -30,7 +30,7 @@ function read<T>(k: string): T | null {
 
 function write(k: string, v: unknown): void {
   try {
-    localStorage.setItem(k, JSON.stringify(v)); // dont bully me for this pls 
+    localStorage.setItem(k, JSON.stringify(v)); 
   } catch (e) {}
 }
 
@@ -124,13 +124,20 @@ export function applyCommits(room: string, list: CommitWire[]): number {
     g = next;
     done++;
   }
-  if (done > 0) saveGroup(room, g);
+  if (done > 0) {
+    X.forgetRatchets(room);
+    saveGroup(room, g);
+  }
   return done;
 }
 
 export function saveGroup(room: string, g: G.Group): void {
   const saved = get(room);
   if (saved) put(room, g, { signer: saved.signer, initPub: saved.initPub, ref: saved.ref, pkg: saved.pkg });
+}
+
+export function forgetRatchets(room: string): void {
+  X.forgetRatchets(room);
 }
 
 export function all(): Record<string, Group> {

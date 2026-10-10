@@ -25,10 +25,31 @@ export type Mesh = {
   onChange: () => void;
 };
 
-const ICE: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+const FALLBACK_ICE: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+let ICE: RTCIceServer[] = FALLBACK_ICE;
 const MAX_PEERS = 24;
 
-function make(id: string, initiator: boolean): Peer {
+export function setIce(list: unknown): void {
+  if (!Array.isArray(list)) return;
+  const clean: RTCIceServer[] = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const urls = (entry as { urls?: unknown }).urls;
+    const names = Array.isArray(urls) ? urls.filter((u) => typeof u === "string") : typeof urls === "string" ? [urls] : [];
+    if (names.length === 0) continue;
+    const server: RTCIceServer = { urls: names };
+    const user = (entry as { username?: unknown }).username;
+    const pass = (entry as { credential?: unknown }).credential;
+    if (typeof user === "string" && typeof pass === "string" && user.length > 0 && pass.length > 0) {
+      server.username = user;
+      server.credential = pass;
+    }
+    clean.push(server);
+  }
+  if (clean.length > 0) ICE = clean;
+}
+
+function make(id: string): Peer {
   const pc = new RTCPeerConnection({ iceServers: ICE, iceCandidatePoolSize: 2 });
   const p: Peer = { id, pc, dc: null, open: false, remoteSet: false };
   pc.oniceconnectionstatechange = () => {
@@ -36,7 +57,6 @@ function make(id: string, initiator: boolean): Peer {
       p.open = false;
     }
   };
-  void initiator;
   return p;
 }
 
@@ -68,11 +88,11 @@ export function mesh(link: string, self: string, signal: Signal, deliver: Delive
   return { link, self, peers: new Map(), online: new Set(), signal, deliver, onData, onChange };
 }
 
-function slot(m: Mesh, id: string): Peer {
+function slot(m: Mesh, id: string): Peer | null {
   const hit = m.peers.get(id);
   if (hit) return hit;
-  if (m.peers.size >= MAX_PEERS) return m.peers.values().next().value as Peer;
-  const p = make(id, true);
+  if (m.peers.size >= MAX_PEERS) return null;
+  const p = make(id);
   bind(m, p);
   m.peers.set(id, p);
   return p;
@@ -81,6 +101,7 @@ function slot(m: Mesh, id: string): Peer {
 export async function dial(m: Mesh, to: string): Promise<void> {
   if (to === m.self) return;
   const p = slot(m, to);
+  if (!p) return;
   if (p.pc.signalingState !== "stable") return;
   const dc = p.pc.createDataChannel("m", { ordered: true });
   bind(m, p);
@@ -92,6 +113,7 @@ export async function dial(m: Mesh, to: string): Promise<void> {
 export async function accept(m: Mesh, from: string, sdp: RTCSessionDescriptionInit): Promise<void> {
   if (from === m.self) return;
   const p = slot(m, from);
+  if (!p) return;
   await p.pc.setRemoteDescription(sdp);
   const answer = await p.pc.createAnswer();
   await p.pc.setLocalDescription(answer);

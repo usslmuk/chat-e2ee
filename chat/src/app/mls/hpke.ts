@@ -38,20 +38,17 @@ function extract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
 
 function expand(prk: Uint8Array, info: Uint8Array, len: number): Uint8Array {
   const out: number[] = [];
-  let prev = new Uint8Array(0);
   let i = 1;
   while (out.length < len) {
-    const inp = cat(prev, info, new Uint8Array([i]));
-    const t = hmac(sha256, prk, inp);
+    const t = hmac(sha256, prk, cat(info, new Uint8Array([i])));
     for (let j = 0; j < t.length; j++) out.push(t[j]);
-    prev = t;
     i++;
   }
   return new Uint8Array(out.slice(0, len));
 }
 
-const kemSuite = cat(enc.encode("KEM"), u16(KEM_ID));
-const kdfSuite = cat(enc.encode("HPKE-v1"), u16(KEM_ID), u16(KDF_ID));
+const kemSuite = cat(enc.encode("HPKE-v1"), enc.encode("KEM"), u16(KEM_ID));
+const kdfSuite = cat(enc.encode("HPKE-v1"), enc.encode("HPKE"), u16(KEM_ID), u16(KDF_ID), u16(AEAD_ID));
 
 function kemExtract(salt: Uint8Array, label: string, ikm: Uint8Array): Uint8Array {
   return extract(salt, cat(kemSuite, enc.encode(label), ikm));
@@ -126,7 +123,7 @@ export function keySchedule(shared: Uint8Array, info: Uint8Array): Context {
   const secret = kdfExtract(shared, "secret", new Uint8Array(0));
   const key = kdfExpand(secret, "key", ctx, NK);
   const baseNonce = kdfExpand(secret, "base_nonce", ctx, NN);
-  const exporter = kdfExpand(secret, "exporter", ctx, NH);
+  const exporter = kdfExpand(secret, "exp", ctx, NH);
   secret.fill(0);
   pskIdHash.fill(0);
   infoHash.fill(0);
@@ -160,10 +157,7 @@ export function openC(c: Context, aad: Uint8Array, ct: Uint8Array): Uint8Array {
 }
 
 export function exporterKey(c: Context, ctx: Uint8Array, len: number): Uint8Array {
-  const l = kdfExpand(c.exporter, "sec", ctx, NH);
-  const out = kdfExpand(l, "context", ctx, len);
-  l.fill(0);
-  return out;
+  return kdfExpand(c.exporter, "sec", ctx, len);
 }
 
 export function fresh(): Uint8Array {

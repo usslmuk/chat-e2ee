@@ -74,3 +74,69 @@ export function senderRatchetKey(r: S.Ratchet, gen: number): { key: Uint8Array; 
   for (let i = 0; i < gen; i++) S.step(walk);
   return S.step(walk);
 }
+
+const WINDOW = 64;
+
+type Track = { gen: number; secret: Uint8Array };
+type Entry = { win: Track[]; root: Uint8Array | null };
+
+const tracks = new Map<string, Entry>();
+export function ratchetAt(room: string, leaf: number, seed: Uint8Array, gen: number): { key: Uint8Array; nonce: Uint8Array } {
+  const id = room + ":" + leaf;
+  let e = tracks.get(id);
+  if (!e) {
+    const base = ratchets(seed).app;
+    seed.fill(0);
+    e = { win: [{ gen: 0, secret: Uint8Array.from(base.secret) }], root: Uint8Array.from(base.secret) };
+    tracks.set(id, e);
+  }
+  seed.fill(0);
+
+  for (let i = e.win.length - 1; i >= 0; i--) {
+    if (e.win[i].gen === gen) {
+      return S.step({ secret: Uint8Array.from(e.win[i].secret), gen });
+    }
+    if (e.win[i].gen < gen) {
+      return seek(e, { secret: Uint8Array.from(e.win[i].secret), gen: e.win[i].gen }, gen);
+    }
+  }
+
+  const walk: S.Ratchet = e.root
+    ? { secret: Uint8Array.from(e.root), gen: 0 }
+    : { secret: Uint8Array.from(e.win[0].secret), gen: e.win[0].gen };
+
+  return seek(e, walk, gen);
+}
+
+function seek(e: Entry, walk: S.Ratchet, gen: number): { key: Uint8Array; nonce: Uint8Array } {
+  while (walk.gen < gen) {
+    record(e, walk);
+    S.step(walk);
+  }
+  record(e, walk);
+  return S.step(walk);
+}
+
+function record(e: Entry, walk: S.Ratchet): void {
+  e.win.push({ gen: walk.gen, secret: Uint8Array.from(walk.secret) });
+  while (e.win.length > WINDOW) {
+    const dropped = e.win.shift();
+    if (dropped) dropped.secret.fill(0);
+  }
+  if (e.win.length >= WINDOW && e.root) {
+    e.root.fill(0);
+    e.root = null;
+  }
+}
+
+export function forgetRatchets(room: string): void {
+  for (const k of [...tracks.keys()]) {
+    if (!k.startsWith(room + ":")) continue;
+    const e = tracks.get(k);
+    if (e) {
+      if (e.root) e.root.fill(0);
+      for (const t of e.win) t.secret.fill(0);
+    }
+    tracks.delete(k);
+  }
+}

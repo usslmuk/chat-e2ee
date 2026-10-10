@@ -1,22 +1,5 @@
 const dev = process.env.NODE_ENV !== "production";
 
-const csp = [
-  "default-src 'self'",
-  dev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "media-src 'self' blob:",
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "object-src 'none'",
-  "manifest-src 'self'",
-  "upgrade-insecure-requests"
-].join("; ");
-
 const nextConfig = {
   images: { unoptimized: true },
   poweredByHeader: false,
@@ -26,7 +9,6 @@ const nextConfig = {
   productionBrowserSourceMaps: false,
   async headers() {
     const base = [
-      { key: "Content-Security-Policy", value: csp },
       { key: "X-Frame-Options", value: "DENY" },
       { key: "X-Content-Type-Options", value: "nosniff" },
       { key: "Referrer-Policy", value: "no-referrer" },

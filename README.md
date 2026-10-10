@@ -1,38 +1,98 @@
 # chat.
 
-End to end encrypted chat that a server cannot read. Rooms are made from a link or a
-code. Messages travel directly between browsers over WebRTC when they can and fall
-back to the relay when they cannot.
+End to end encrypted chat. The server stores ciphertext and holds no keys.
 
-MLS (RFC 9420) written from the specification, so membership changes are real key
-changes rather than bookkeeping. One Next.js process, one port, no custom server.
+Rooms are made from a link or an invite code. Messages travel directly between
+browsers over WebRTC when a direct connection works, and through the server when it
+does not.
+
+Group crypto is MLS (RFC 9420), written from the spec. One Next.js process, one
+port, no separate server to run.
+
+> [!IMPORTANT]
+> ## One room, two people
+>
+> A room holds exactly two participants. The server refuses a third join with
+> `409`, and the client stops showing the invite code once a room is full, so
+> there is nothing left to forward to a third person.
+>
+> The limit is enforced, not advisory. Cross member key resolution past two is
+> unfinished, so the cap is what keeps that limitation out of the product. Do
+> not remove it expecting group chat to work.
+
+> [!WARNING]
+> ## Read this before you rely on it
+>
+> - **MLS passes the official RFC 9420 vectors, with one gap.** Tree math, crypto
+>   basics, the key schedule, and the secret tree are verified against the vectors
+>   published by the MLS working group and match byte for byte. That covers the
+>   arithmetic, not the wire format of a full handshake. Welcome, commit framing,
+>   and the passive client scenarios are implemented to the spec but not checked
+>   against vectors, and this has not been tested against another MLS
+>   implementation, so interoperability is unproven.
+> - **Single instance only.** Presence, offers, and ICE state live in process
+>   memory. Two instances break chat. This also rules out serverless hosts.
+
+> [!NOTE]
+> ## Project status
+>
+> Pre 1.0, version `0.1.0`. No release schedule and no compatibility promise.
+> Anything can change or break between commits.
+>
+> **No licence file yet.** Until one is added the repo is unlicensed, which
+> means nobody may legally reuse it. Add one before sharing it as anything other
+> than something you run yourself.
+>
+> **Not audited.** No third party has reviewed this code. It has not been through
+> a security review, a penetration test, or a formal cryptographic analysis. Treat
+> the security properties as claims made by the author, not verified guarantees.
+>
+> Room contents are private to the two participants and expire after 24 hours.
+> There is no account system and no recovery, so a lost device means lost history.
+
+## What it does
+
+- Rooms from a link or a code, joinable either way. Several sit in the sidebar and
+  switch without a reload.
+- Text and attachments up to 10 MB. Filename, type, and size all travel inside the
+  ciphertext.
+- Emoji reactions per message, grouped and counted. One click heart, or the plus
+  for the full picker.
+- Delete your own messages. The host can delete the whole chat.
+- Typing indicators and presence. Both come from the server, so someone going
+  offline shows up at once instead of on the next poll.
+- Live updates over server sent events, unread counts per room.
+- No plaintext in the database. Field names are random codes and the map that
+  decodes them is not stored alongside the data. That is obfuscation rather than a
+  security boundary, since the map ships in this repo.
+- Everything expires. Blobs, messages, and idle rooms go after 24 hours. An invite
+  code dies with the room behind it.
 
 ## How it works
 
-Every room is an MLS group. Members share a group key that rotates on every membership
-change, so joining and leaving changes what you can read rather than handing the same
-key to one more person.
+Each room is an MLS group. The group key rotates whenever membership changes, so
+adding someone produces a new key instead of a second copy of the old one.
 
-The founder holds the group. When someone joins, it pulls their public KeyPackage,
-runs a Commit adding them as a leaf, stores a Welcome for that member, and publishes
-the commit for everyone already present. Members apply commits in order, each verified
-against the committer's leaf credential. The composer stays locked until the group
-holds every member of the room, so nobody seals to a tree that excludes the reader.
+The founder runs the group. When someone joins it fetches their public KeyPackage,
+commits them in as a leaf, and stores a Welcome for that member. The composer stays
+locked until the group contains every member of the room, so nobody can seal a
+message to a tree that leaves the reader out.
 
-Bodies are sealed with AES-128-GCM under a sender ratchet, mixed with a random guard
-so two messages at one generation never share a nonce. Sender identity is the leaf
-index inside the ciphertext, proved by an Ed25519 signature.
+Message bodies are sealed with AES-128-GCM under a sender ratchet. A random guard
+value is mixed into the nonce so two messages at the same generation never collide.
+The sender's leaf index goes inside the ciphertext and is proved by an Ed25519
+signature.
 
-The server stores ciphertext and routing metadata. It holds no keys. Field names are
-random codes so a database dump is not a readable schema, and browser storage keys are
-random strings.
+The server sees ciphertext, room membership, sizes, and timing. It cannot see
+content, filenames, or keys.
 
-Presence is real rather than inferred: the server knows who holds an open event
-stream, so going offline shows immediately instead of after a poll.
+The identity key sits in browser storage, which makes script execution the whole
+boundary. Production CSP carries a per response nonce and drops `unsafe-inline`
+from `script-src`, so an injected script has to present that nonce to run at all.
 
-## Running
+## Running it
 
-Node 20+, pnpm, and a MongoDB Atlas cluster.
+Node 20 or newer, pnpm, and a MongoDB Atlas cluster.
 
 ```
 pnpm install
@@ -50,14 +110,19 @@ node -e "console.log('CODE_PEPPER=' + require('crypto').randomBytes(32).toString
 pnpm dev
 ```
 
-Runs on http://localhost:1337. Open two browsers, or one window and one private
-window, since two tabs share storage and would share an identity.
+Serves on http://localhost:1337. Use two browsers, or a normal window and a private
+one, because two tabs share storage and would end up sharing an identity.
 
-Production is `pnpm build` then `pnpm start`. Every variable in `.env.example` is
-required and the server refuses to boot without them. Generate a fresh pepper per
-deployment and never reuse one across environments. `PEPPER` hashes session tokens and
-`CODE_PEPPER` signs invite codes, so a database dump without them cannot forge a
-session or a link.
+Production is `pnpm build` then `pnpm start`. Generate a fresh pepper per
+deployment and never reuse one between environments.
+
+`PEPPER` keys the session token hash. `CODE_PEPPER` keys the invite code hash. Both
+are keyed hashes, not signatures. They mean a stolen database cannot be cracked or
+forged offline without the pepper. They do not let the server prove who issued a
+code, since the server never signs anything.
+
+`TURN_URL` and `TURN_SECRET` are the only optional variables. Leave both out and
+the app runs on public STUN alone, which is enough for most people. See Relay.
 
 ## Layout
 
@@ -70,103 +135,230 @@ chat/
   fields.json       scrambled database field names
 ```
 
-API routes return plain field names. `fields.json` exists so the database itself is
-unreadable in a dump, not to complicate the JSON.
+Routes return plain field names. `fields.json` is only there so a database dump
+does not read as a schema.
 
 ## Cryptography
 
-Written against the specifications rather than a library:
+Written against the specs:
 
 - RFC 9420, MLS. Tree math, key schedule, secret tree, sender ratchets, key
-  packages, commits with an update path, welcome messages, remote commit application,
-  PSK proposals, leaf updates, external senders, resumption secrets, exporters.
-- RFC 9180, HPKE. DHKEM(X25519) base mode.
-- RFC 5869, HKDF-SHA256.
-- NIST curves, X25519 and Ed25519.
+  packages, commits with an update path, Welcome messages, PSK proposals, leaf
+  updates, external senders, resumption secrets, exporters.
 
-Suite `0x0001`, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`. Key packages and
-commits are signed by the member's Ed25519 identity key, so a KeyPackage cannot be
-swapped in transit, a commit cannot be forged, and nobody can be added under someone
-else's leaf.
+Verified against the vectors published at
+`github.com/mlswg/mls-implementations/tree/main/test-vectors`, for suite `0x0001`:
+tree math across ten tree sizes up to 512 leaves, the crypto basics group, five
+consecutive key schedule epochs, and the secret tree at one, eight, and thirty two
+leaves. All match byte for byte. Suite `0x0001` only, since that is all this
+implementation supports.
+- RFC 9180, HPKE. DHKEM(X25519) base mode. Verified against the official test
+  vectors: shared secret, key, base nonce, exporter secret, ciphertext, and secret
+  export all match byte for byte.
+- RFC 5869, HKDF-SHA256.
+- RFC 7748, X25519. RFC 8032, Ed25519.
+
+Suite `0x0001`, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`.
+
+Key packages and commits are signed with the member's Ed25519 identity key, so a
+package cannot be swapped in transit and nobody gets added under someone else's
+leaf.
+
+Sender ratchets are advanced rather than re-walked. The receiver keeps a rolling
+window of the last 64 generations per sender and erases the ratchet root once it
+fills, which is what gives forward secrecy across membership changes. Anything older
+than the window can no longer be derived from a captured device.
 
 ## Benchmarks
 
-Node 24 on Windows, single core, no native crypto addons. Measured against the real
-implementation.
+Node 24 on Windows, one core, no native crypto addons. Measured against this code,
+averaged over three runs, in a room where the sender has just started.
 
 | Operation | Time |
 |---|---|
 | seal message, 32 byte payload | 0.10 ms |
-| open message, 32 byte payload | 18.7 ms |
-| seal message, 32 KB payload | 1.5 ms |
-| open message, 32 KB payload | 26.6 ms |
-| commit, add one member | 10.7 ms |
-| apply a remote commit | 37.6 ms |
-| key package create | 1.4 ms |
-| full 2 member handshake | 22.6 ms |
-| full 10 member bootstrap | 601 ms |
+| open message, 32 byte payload | 0.11 ms |
+| seal message, 32 KB payload | 1.4 ms |
+| open message, 32 KB payload | 1.4 ms |
+| commit, add one member | 14.9 ms |
+| apply a remote commit | 19.2 ms |
+| key package create | 1.3 ms |
+| full 2 member handshake | 19.1 ms |
 
-Wire overhead is 40 bytes on a small message and about 4 KB on a 32 KB attachment.
+Wire overhead is 65 bytes on a small message, about 4 KB on a 32 KB attachment.
 
-Sealing runs near 10,000 messages a second. Opening is far slower and that asymmetry
-is worth understanding before optimising it: the sender already holds its ratchet
-key, while the receiver re-derives the sender's ratchet from a path secret by walking
-the tree, which costs one HMAC per level. The 10 member bootstrap is dominated by
-commit application, since every member processes every commit.
+Opening a message stays close to constant as a room gets longer:
+
+```
+after   1 message: 0.11 ms
+after  10 messages: 0.15 ms
+after  50 messages: 0.30 ms
+after 100 messages: 0.52 ms
+after 300 messages: 1.38 ms
+```
+
+The remaining growth is the sender's path secret being re-derived from the MLS tree
+on each open, not the ratchet. Caching that derivation would flatten it further.
 
 ## Deploying
 
-Terminate TLS in front of it. HSTS is set and P2P needs a secure context for WebRTC.
+Put TLS in front of it. HSTS is set and WebRTC needs a secure context.
 
-The port is fixed at 1337 by the `dev` and `start` scripts; change it in
-`chat/package.json` if that clashes. Pass the real client IP in `X-Forwarded-For` or
-the per-IP rate limit counts every client as one.
+Port 1337 is fixed by the `dev` and `start` scripts. Change it in
+`chat/package.json` if that clashes. Forward the real client IP in
+`X-Forwarded-For`, or the per-IP rate limit treats every client as one address.
 
-Live updates ride a server-sent event stream at `/api/v1/events`, with signalling sent
-back as POSTs. A join and a stored Welcome both push a wake, so a handshake lands in
-about a second. Once everyone is in, the client backs off to a 20 to 30 second tick as
-a safety net.
+Live updates come over an event stream at `/api/v1/events`, with signalling posted
+back. A join and a stored Welcome both push a wake, so a handshake lands in about
+a second. After that the client settles into a 20 to 30 second tick as a backstop.
 
-The stream lives in process memory, so this is a single instance deployment. Past one
-instance you need a shared bus such as Redis. That also rules out serverless hosts,
-which freeze idle connections.
+That stream lives in process memory, so this runs as a single instance. More than
+one needs a shared bus such as Redis.
 
 Expiry is Mongo TTL indexes plus a sweeper every ten minutes that clears rooms idle
-past `IDLE_TTL_HOURS` along with their messages, reactions, blobs, invites, and pending
-welcomes. No change streams, so any cluster tier works.
+past `IDLE_TTL_HOURS`, along with their messages, reactions, blobs, invites, and
+pending welcomes. No change streams, so any cluster tier works.
 
-## Design notes
+## Relay
 
-Metadata leaks. Whoever watches the network sees who connected to whom and roughly how
-much they sent. P2P hides contents from the relay, not the fact that two people are
-talking.
+Messages are relayed as ciphertext, so the server never reads them. But when two
+browsers cannot open a direct connection, the bytes travel through it instead of
+going straight peer to peer. That is what TURN is for.
 
-Anyone in a room can read every message, screenshot them, or forward them. MLS gives
-forward secrecy across membership changes, not recall.
+Out of the box the app uses public STUN servers only. Most people never notice,
+because direct connections work on home broadband and mobile. The ones that fail
+are behind symmetric NAT, which is mostly corporate firewalls and some carriers.
 
-The server serves the JavaScript that holds your keys, so a compromised server can
-serve code that steals everything. Self hosting is the meaningful mitigation.
+If you want it working everywhere, run coturn. On a VPS with a public IP:
 
-## Status
+```
+sudo apt install coturn
+openssl rand -hex 32
+```
 
-Working end to end: rooms, invite codes, key packages, commits, welcomes, sender
-ratchets both directions, history, attachments, reactions, per member deletion, host
-deletion, P2P with relay fallback, live push, presence, and 24 hour expiry.
+Put the output in `static-auth-secret` in `/etc/turnserver.conf`, alongside
+`use-auth-secret` and `realm`, plus `cert` and `pkey` from your TLS certificate so
+`turns` works. Add the private ranges to `denied-peer-ip` or the relay gets abused
+as an open proxy and your address gets banned. The coturn docs list the full set.
 
-**Two member rooms are the supported configuration.** Larger rooms are partial.
-Membership changes commit and propagate correctly: every member applies every commit,
-and a ten member room converges on one epoch and one tree shape. Message visibility
-inside those rooms is not yet correct, so treat anything past two people as unfinished.
-The group state agrees, per sender key resolution does not.
+Then set both variables or neither:
 
-Follow ups in order: correct cross member sender key resolution past two people,
-official RFC 9420 test vectors, leave and kick in the UI, non extractable key storage,
-multi device, onion transport.
+```
+TURN_URL=turn:your-domain.com:3478,turns:your-domain.com:5349
+TURN_SECRET=the generated value
+```
+
+Setting one without the other stops the server booting, on purpose.
+
+`use-auth-secret` is what makes this safe to hand out. The browser never receives
+your TURN password. It gets a username that is an expiry timestamp an hour out and
+a credential that is an HMAC of that timestamp, generated per request at
+`/api/v1/ice`. A leaked credential stops working on its own, and the long term
+secret never leaves the server.
+
+Two honest caveats. Relayed traffic means the TURN operator sees who connected to
+whom, when, and roughly how much, though not the contents. And the cost is
+bandwidth, since every relayed byte crosses the VPS twice. For text that is nothing.
 
 ## Contributing
 
-Pull requests get reviewed. Expect questions about the threat model before anyone
-reads the code. Name the algorithm and say where it gets applied.
+Pull requests get reviewed. Expect to be asked about the threat model before anyone
+reads the code. Name the algorithm and say where it is applied.
 
-Worth opening a PR for the items in Status. Will get declined: weakening or bypassing
-encryption, storing anything in plaintext, server side content filtering.
+What gets declined: weakening or bypassing encryption, storing anything in
+plaintext, server side content filtering, and anything that would raise the two
+person cap without fixing the ratchet tree first.
+
+<details>
+<summary>Changelog</summary>
+
+## 2026-10-11
+
+MLS validated against the official RFC 9420 test vectors.
+
+**Corrected**
+
+- `ExpandWithLabel` used a fixed two byte length header for the label and context.
+  RFC 9420 section 2.1.2 length prefixes vectors with the variable length integer
+  from RFC 9000 section 16. Every derived secret was wrong as a result. Both of
+  our own clients agreed with each other, so the group worked, but no third party
+  implementation could have interchanged with it.
+- `ExpandWithLabel` ran HKDF extract before expand. The RFC defines it in terms of
+  `KDF.Expand`, which is RFC 5869 expand alone.
+
+Together those two made the key schedule, the secret tree, and the sender ratchets
+deviate from the spec. All now match the published vectors byte for byte.
+
+Not fixed. The secret tree descent still uses a `path` label and its own root
+derivation rather than the `tree` label with a `left` or `right` context from
+section 9. Both sides of every exchange use the same functions, so this is self
+consistent and secure in practice, but it is not the wire shape another
+implementation expects. Interoperability is unproven either way, and this was not
+changed because the vectors that would cover it need more than the two member
+rooms this project allows.
+
+**Added**
+
+- TURN support with coturn shared secret credentials, issued per request and
+  expiring in an hour. Optional, and off unless both variables are set.
+
+## 2026-10-10
+
+Initial release.
+
+**Added**
+
+- Content Security Policy carries a per response nonce in production and drops
+  `unsafe-inline` from `script-src`.
+- Forward secrecy across membership changes. A rolling window of the last 64
+  generations per sender is retained and the ratchet root is erased once it fills.
+- Invite codes raised to 96 bits.
+- Cursor pagination over message history, ordered by document id.
+- Per room blob quota of 64 MB, enforced by conditional increment.
+- Unique partial index on room and message id, making message send idempotent.
+
+**Fixed**
+
+- Three HPKE defects, all of which changed derived key material. `LabeledExtract`
+  and `LabeledExpand` were missing the `HPKE-v1` prefix in the KEM context and the
+  `HPKE` suite label in the ciphersuite context, and the AEAD id was absent from
+  domain separation. `expand` chained the previous output block into the next HMAC
+  input instead of using `info || i`. The exporter secret used the label
+  `exporter` rather than `exp`.
+- Opening a message no longer re-walks the sender's ratchet from generation 0.
+- `CODE_PEPPER` was loaded and length checked but never used. Invite code hashes now
+  use it.
+- Message history was silently truncated. Every message stored sequence `0`, so the
+  sort ran on a content hash and the 300 message limit applied across all rooms at
+  once.
+- An earlier non partial unique index could not be built against existing documents,
+  which took the whole app down with `database unreachable`.
+- Connection failures were reduced to a bare `database unreachable` by an empty catch
+  block, hiding the underlying cause.
+- Commit, welcome, and key publication required the room founder, so closing that
+  browser mid handshake froze the group permanently.
+- Rate limiting used a fixed window, which let a client double its rate across a
+  window boundary. The bucket map also cleared itself when full, which would have
+  let one client wipe the rate limit state for every user and IP.
+- `slot` in the peer mesh returned the first peer in the map rather than the
+  requested one once at capacity.
+- Blob uploads accepted 14 MB with no per room quota.
+- Deleted `rkSeal` and `rkOpen`, which prepended 12 bytes of their own AES key to
+  every ciphertext. No call sites, so no live exposure.
+- The quick reaction heart was a double encoded UTF-8 sequence and rendered as
+  mojibake.
+
+**Changed**
+
+- Rooms are capped at two participants, enforced server side.
+- Build stamp bumped to `10`. The HPKE key schedule changes make previously stored
+  group state unreadable, so existing rooms are cleared on load.
+
+**Corrected**
+
+- Ed25519 is RFC 8032. X25519 is RFC 7748. An earlier revision credited both to
+  RFC 7748 and to NIST.
+- `CODE_PEPPER` does not sign invite codes. A keyed hash is not a signature.
+- Random database field names are obfuscation, not protection.
+
+</details>

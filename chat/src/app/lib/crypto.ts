@@ -60,6 +60,13 @@ function hkdfExpand(prk: Uint8Array, info: Uint8Array, len: number): Uint8Array 
   return new Uint8Array(out.slice(0, len));
 }
 
+export function ctId(ct: string): string {
+  const h = sha256(enc.encode(ct));
+  let s = "";
+  for (let i = 0; i < 15; i++) s += String.fromCharCode(h[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 export function concat(...parts: Uint8Array[]): Uint8Array {
   let n = 0;
   for (const p of parts) n += p.length;
@@ -132,36 +139,6 @@ export function edVerify(pub: Uint8Array, data: Uint8Array, sig: Uint8Array): bo
 
 const pairInfo = "p4Wk8Zn2Qv6T";
 const msgTag = new Uint8Array([109, 115, 103]);
-
-export function pairSeal(peerX: Uint8Array, pt: Uint8Array, aad: Uint8Array): Uint8Array {
-  const eph = x25519.utils.randomSecretKey() as Uint8Array;
-  const ePub = x25519.getPublicKey(eph);
-  const shared = x25519.getSharedSecret(eph, peerX);
-  eph.fill(0);
-  const full = concat(msgTag, aad);
-  const k = derive(shared, pairInfo, 64);
-  const n1 = randomBytes(12);
-  const inner = seal(k.slice(0, 32), n1, pt, full);
-  const n2 = randomBytes(12);
-  const outer = chacha20poly1305(k.slice(32, 64), n2, full).encrypt(concat(n1, inner));
-  shared.fill(0);
-  k.fill(0);
-  return concat(ePub, n2, outer);
-}
-
-export function pairOpen(ownX: Uint8Array, box: Uint8Array, aad: Uint8Array): Uint8Array {
-  const full = concat(msgTag, aad);
-  const ePub = box.slice(0, 32);
-  const n2 = box.slice(32, 44);
-  const outer = box.slice(44);
-  const shared = x25519.getSharedSecret(ownX, ePub);
-  const k = derive(shared, pairInfo, 64);
-  const inner = chacha20poly1305(k.slice(32, 64), n2, full).decrypt(outer);
-  const pt = open(k.slice(0, 32), inner.slice(0, 12), inner.slice(12), full);
-  shared.fill(0);
-  k.fill(0);
-  return pt;
-}
 
 export function safety(edA: Uint8Array, edB: Uint8Array, idA: string, idB: string): string {
   const cmp = (a: Uint8Array, b: Uint8Array) => {

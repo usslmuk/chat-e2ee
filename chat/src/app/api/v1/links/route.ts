@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     [C.grps.g]: g,
     [C.grps.mm]: [me.who],
     [C.grps.gi]: String(b.gi),
-    [C.grps.sq]: 0,
+    [C.grps.by]: 0,
     [C.grps.ep]: 0,
     [C.grps.ac]: new Date(),
     [C.grps.exp]: exp

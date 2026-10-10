@@ -15,7 +15,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   const db = await getDb();
   const row = await db.collection("grps").findOne({ [C.grps.g]: g });
   const mm: string[] = row && Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
-  if (mm[0] !== me.who) return Response.json({ error: "bad key" }, { status: 403 });
+  if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad key" }, { status: 403 });
   await db.collection("grps").updateOne({ [C.grps.g]: g }, { $set: { [C.grps.gi]: String(b.gi) } });
   return Response.json({ ok: true });
 }

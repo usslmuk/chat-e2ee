@@ -197,7 +197,6 @@ export function applyGroupInfo(
 ): Group {
   const t = T.emptySlots(n);
   const priv = new Map<number, Uint8Array>();
-  const leaves: Uint8Array[] = [];
   const parents = new Map<number, T.Par>();
   let leafSlot = 0;
   for (let i = 0; i < info.nodes.length; i++) {
@@ -208,7 +207,6 @@ export function applyGroupInfo(
       const l = F.readLeafNode(nb);
       if (!verifyLeaf(l, info.groupId, leafSlot)) throw new Error("bad leaf signature");
       t[i] = { k: 1, v: { enc: l.enc, sig: l.sig, cred: l.cred, ph: l.parentHash, unmerged: [] } };
-      leaves.push(l.enc);
       leafSlot++;
     } else {
       const p = F.readParentNode(nb);
@@ -242,7 +240,6 @@ export function applyGroupInfo(
   seed: new Uint8Array(32),
     fromCommit: [],
   };
-  void leaves;
   refresh(g, secret, held);
   return g;
 }

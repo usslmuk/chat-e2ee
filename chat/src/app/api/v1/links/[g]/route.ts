@@ -20,7 +20,6 @@ export async function GET(req: Request, ctx: { params: Promise<{ g: string }> })
   return Response.json({
     g,
     mm,
-    sq: Number(row[C.grps.sq] || 0),
     ep: Number(row[C.grps.ep] || 0),
     inRoom: true,
     gi
