@@ -6,7 +6,7 @@
   "inv": { "h": "iH1a", "g": "iG2b", "exp": "eX9p" },
   "msgs": { "id": "mI4d", "g": "mG5e", "ct": "mC6f", "sg": "mS8h", "bo": "mB9i", "exp": "eX9p" },
   "reac": { "id": "rI1a", "g": "rG2b", "ct": "rC3c", "sg": "rS4d", "cv": "rC5e", "exp": "eX9p" },
-  "blobs": { "id": "bI1b", "data": "bD2d", "g": "bG3c", "exp": "eX9p" },
+  "blobs": { "id": "bI1b", "data": "bD2d", "g": "bG3c", "sz": "sZ4e", "exp": "eX9p" },
   "tok": { "h": "tH1a", "who": "tW2b", "exp": "eX9p" },
   "wire": { "tok": "tO0k" }
 }

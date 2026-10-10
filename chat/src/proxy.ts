@@ -3,15 +3,21 @@ import { NextRequest, NextResponse } from "next/server";
 const dev = process.env.NODE_ENV !== "production";
 
 function policy(nonce: string): string {
+  const script = dev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self' 'nonce-" + nonce + "' 'strict-dynamic'";
+  const style = dev ? "style-src 'self' 'unsafe-inline'" : "style-src 'self' 'nonce-" + nonce + "'";
   return [
     "default-src 'self'",
-    dev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self' 'nonce-" + nonce + "'",
-    "style-src 'self' 'unsafe-inline'",
+    script,
+    "script-src-attr 'none'",
+    style,
+    "style-src-attr 'none'",
     "img-src 'self' blob: data:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
+    "frame-src 'none'",
+    "child-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'none'",

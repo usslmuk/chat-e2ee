@@ -5,6 +5,7 @@ node_modules/
 out/
 build/
 dist/
+.vectors/
 
 *.tsbuildinfo
 

@@ -10,7 +10,10 @@ export const MEMBER = 1;
 export const ADD = 1;
 export const UPDATE = 2;
 export const REMOVE = 3;
-export const PSK = 5;
+export const REINIT = 4;
+export const EXTERNAL_INIT = 5;
+export const GROUP_CONTEXT_EXTENSIONS = 6;
+export const PSK = 7;
 export const SRC_KEY_PACKAGE = 1;
 export const SRC_UPDATE = 2;
 export const SRC_COMMIT = 3;
@@ -29,9 +32,22 @@ export type Leaf = {
 
 export type Par = {
   enc: Uint8Array;
-  sig: Uint8Array;
   parentHash: Uint8Array;
+  unmerged: number[];
 };
+
+function writeUnmerged(list: number[]): Uint8Array {
+  const w = new Writer();
+  for (const l of list) w.u32(l);
+  return w.out();
+}
+
+function readUnmerged(b: Buf): number[] {
+  const blob = new Buf(b.vec());
+  const out: number[] = [];
+  while (!blob.done) out.push(blob.u32());
+  return out;
+}
 
 export function defaultCaps(): Uint8Array {
   return new Writer()
@@ -62,7 +78,11 @@ export function leafTbsOf(
 }
 
 export function writeLeafNode(v: Leaf): Uint8Array {
-  return new Writer().u8(1).raw(v.tbs).vec(v.signature).out();
+  return new Writer().u8(1).raw(writeLeafNodeBody(v)).out();
+}
+
+export function writeLeafNodeBody(v: Leaf): Uint8Array {
+  return new Writer().raw(v.tbs).vec(v.signature).out();
 }
 
 export function readLeafNode(b: Buf): Leaf {
@@ -71,15 +91,18 @@ export function readLeafNode(b: Buf): Leaf {
 }
 
 export function writeParentNode(v: Par): Uint8Array {
-  return new Writer().vec(v.enc).vec(v.sig).vec(v.parentHash).out();
+  return new Writer().vec(v.enc).vec(v.parentHash).vec(writeUnmerged(v.unmerged)).out();
 }
 
 export function readParentNode(b: Buf): Par {
-  return { enc: b.vec(), sig: b.vec(), parentHash: b.vec() };
+  const enc = b.vec();
+  const parentHash = b.vec();
+  const unmerged = readUnmerged(b);
+  return { enc, parentHash, unmerged };
 }
 
 export function writeParentNodeFull(v: Par): Uint8Array {
-  return new Writer().u8(2).vec(v.enc).vec(v.sig).vec(v.parentHash).out();
+  return new Writer().u8(2).vec(v.enc).vec(v.parentHash).vec(writeUnmerged(v.unmerged)).out();
 }
 
 export type RatchetTree =
@@ -113,7 +136,7 @@ export function readRatchetTree(b: Buf): RatchetTree[] {
   return out;
 }
 
-function readLeafNodeBody(b: Buf): Leaf {
+export function readLeafNodeBody(b: Buf): Leaf {
   const start = b.pos;
   const enc = b.vec();
   const sigKey = b.vec();
@@ -134,26 +157,98 @@ function readLeafNodeBody(b: Buf): Leaf {
   return { enc, sigKey, cred, source, parentHash, tbs: b.slice(start, end), signature };
 }
 
+export const UNKNOWN_PROPOSAL = 65535;
+export const REFERENCE = 300;
+
 export type Proposal =
-  | { t: 1; pkg: Uint8Array }
-  | { t: 2; pkg: Uint8Array }
-  | { t: 3; leaf: number }
-  | { t: 5; psk: Uint8Array };
+  | { t: typeof ADD; pkg: Uint8Array }
+  | { t: typeof UPDATE; leaf: Uint8Array }
+  | { t: typeof REMOVE; leaf: number }
+  | { t: typeof PSK; psk: Uint8Array }
+  | { t: typeof REFERENCE; ref: Uint8Array }
+  | { t: typeof GROUP_CONTEXT_EXTENSIONS; ext: Uint8Array }
+  | { t: typeof UNKNOWN_PROPOSAL; raw: Uint8Array };
+
+export function readKeyPackage(b: Buf): Uint8Array {
+  const start = b.pos;
+  const attempt = (flat: boolean): void => {
+    b.reset(start);
+    b.u16();
+    b.u16();
+    b.vec();
+    if (flat) {
+      b.vec();
+      b.vec();
+      b.vec();
+      b.vec();
+    } else {
+      readLeafNode(b);
+    }
+    b.vec();
+    b.u64();
+    b.u64();
+    b.vec();
+    b.vec();
+  };
+  for (const flat of [false, true]) {
+    try {
+      attempt(flat);
+      return b.since(start);
+    } catch {}
+  }
+  b.reset(start);
+  return b.rest();
+}
+
+export function readPskId(b: Buf): Uint8Array {
+  const start = b.pos;
+  const kind = b.u8();
+  if (kind === 1) {
+    b.vec();
+    b.vec();
+  } else if (kind === 2) {
+    b.vec();
+    b.u64();
+  } else if (kind === 3) {
+    b.vec();
+    b.vec();
+    b.u16();
+  }
+  return b.since(start);
+}
+
+export function pskIdParts(ser: Uint8Array): { id: Uint8Array; psk: Uint8Array } {
+  try {
+    const b = new Buf(ser);
+    if (b.u8() === 1) return { id: b.vec(), psk: b.vec() };
+    return { id: b.vec(), psk: new Uint8Array(0) };
+  } catch {
+    return { id: new Uint8Array(0), psk: new Uint8Array(0) };
+  }
+}
 
 export function writeProposal(p: Proposal): Uint8Array {
-  const w = new Writer().u8(p.t);
-  if (p.t === 3) w.u32(p.leaf);
-  else if (p.t === 5) w.vec(p.psk);
-  else w.vec(p.pkg);
+  if (p.t === REFERENCE) return new Writer().u8(2).vec(p.ref).out();
+  const w = new Writer().u8(1).u16(p.t);
+  if (p.t === REMOVE) w.u32(p.leaf);
+  else if (p.t === UPDATE) w.raw(p.leaf);
+  else if (p.t === PSK) w.raw(p.psk);
+  else if (p.t === ADD) w.raw(p.pkg);
+  else if (p.t === GROUP_CONTEXT_EXTENSIONS) w.vec(p.ext);
   return w.out();
 }
 
 export function readProposal(b: Buf): Proposal {
-  const t = b.u8();
-  if (t === 3) return { t, leaf: b.u32() };
-  if (t === 5) return { t, psk: b.vec() };
-  if (t === 1 || t === 2) return { t, pkg: b.vec() };
-  throw new Error("bad proposal type");
+  const kind = b.u8();
+  if (kind === 2) return { t: REFERENCE, ref: b.vec() };
+  if (kind !== 1) return { t: UNKNOWN_PROPOSAL, raw: b.rest() };
+  const t = b.u16();
+  if (t === REMOVE) return { t, leaf: b.u32() };
+  if (t === UPDATE) return { t, leaf: b.rest() };
+  if (t === ADD) return { t, pkg: readKeyPackage(b) };
+  if (t === PSK || t === 4) return { t: PSK, psk: readPskId(b) };
+  if (t === GROUP_CONTEXT_EXTENSIONS || t === 5) return { t: GROUP_CONTEXT_EXTENSIONS, ext: b.vec() };
+  return { t: UNKNOWN_PROPOSAL, raw: new Writer().u16(t).raw(b.rest()).out() };
 }
 
 export type PathNode = { enc: Uint8Array; kemOutput: Uint8Array };
@@ -163,11 +258,11 @@ export type UpdatePath = { leaf: Leaf; nodes: PathNode[] };
 export function writePath(p: UpdatePath): Uint8Array {
   const nw = new Writer();
   for (const n of p.nodes) nw.vec(n.enc).vec(n.kemOutput);
-  return new Writer().vec(writeLeafNode(p.leaf)).vec(nw.out()).out();
+  return new Writer().raw(writeLeafNodeBody(p.leaf)).vec(nw.out()).out();
 }
 
 export function readPath(b: Buf): UpdatePath {
-  const leaf = readLeafNode(new Buf(b.vec()));
+  const leaf = readLeafNodeBody(b);
   const blob = new Buf(b.vec());
   const nodes: PathNode[] = [];
   while (!blob.done) nodes.push({ enc: blob.vec(), kemOutput: blob.vec() });
@@ -175,11 +270,10 @@ export function readPath(b: Buf): UpdatePath {
 }
 
 export function writeCommit(path: UpdatePath | null, proposals: Proposal[]): Uint8Array {
-  const w = new Writer().none(path !== null);
-  if (path) w.vec(writePath(path));
   const pw = new Writer();
-  for (const p of proposals) pw.vec(writeProposal(p));
-  w.vec(pw.out());
+  for (const p of proposals) pw.raw(writeProposal(p));
+  const w = new Writer().vec(pw.out()).none(path !== null);
+  if (path) w.raw(writePath(path));
   return w.out();
 }
 
@@ -215,8 +309,8 @@ export function readFramed(b: Buf): Framed {
   };
 }
 
-export function groupContext(groupId: Uint8Array, epoch: number, suite: number, treeHash: Uint8Array, confirmed: Uint8Array): Uint8Array {
-  return new Writer().u16(VERSION).u16(suite).vec(groupId).u64(epoch).vec(treeHash).vec(confirmed).out();
+export function groupContext(groupId: Uint8Array, epoch: number, suite: number, treeHash: Uint8Array, confirmed: Uint8Array, extensions = new Uint8Array(0)): Uint8Array {
+  return new Writer().u16(VERSION).u16(suite).vec(groupId).u64(epoch).vec(treeHash).vec(confirmed).vec(extensions).out();
 }
 
 export function contentTbs(wire: number, content: Uint8Array, ctx: Uint8Array): Uint8Array {
@@ -268,8 +362,16 @@ export function keyPackage(
   return new Writer().vec(body).vec(sign(tbsLabel("KeyPackageTBS", body))).vec(leafSig).out();
 }
 
+export function refHash(label: string, value: Uint8Array): Uint8Array {
+  return sha256(new Writer().vec(new TextEncoder().encode("MLS 1.0 " + label)).vec(value).out());
+}
+
 export function keyPackageRef(pkg: Uint8Array): Uint8Array {
-  return sha256(pkg);
+  return refHash("KeyPackage Reference", pkg);
+}
+
+export function proposalRef(prop: Uint8Array): Uint8Array {
+  return refHash("Proposal Reference", prop);
 }
 
 export function leafTbs(v: Leaf, groupId: Uint8Array | null, index: number): Uint8Array {

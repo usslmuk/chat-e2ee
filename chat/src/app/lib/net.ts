@@ -169,7 +169,7 @@ export function delLink(token: string, g: string) {
   return call("/api/v1/links/" + g, token, "DELETE", {}) as Promise<{ ok: boolean }>;
 }
 
-export function delMsg(token: string, id: string, g: string, sig: string) {
-  const u = sig.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  return call("/api/v1/msgs/" + id + "?g=" + g + "&sig=" + u, token, "DELETE") as Promise<{ ok: boolean }>;
+export function delMsg(token: string, id: string, g: string, tok: string) {
+  const u = tok.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return call("/api/v1/msgs/" + id + "?g=" + g + "&tok=" + u, token, "DELETE") as Promise<{ ok: boolean }>;
 }

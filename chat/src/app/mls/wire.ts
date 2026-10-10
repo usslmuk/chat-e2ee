@@ -55,6 +55,10 @@ export class Buf {
     return this.b.subarray(start, end);
   }
 
+  reset(pos: number): void {
+    this.o = pos;
+  }
+
   get pos(): number {
     return this.o;
   }
@@ -65,6 +69,10 @@ export class Buf {
 
   rest(): Uint8Array {
     return this.take(this.left);
+  }
+
+  since(start: number): Uint8Array {
+    return this.take(this.o - start);
   }
 
   none(): boolean {

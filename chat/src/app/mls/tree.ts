@@ -17,8 +17,7 @@ export type Leaf = {
 
 export type Par = {
   enc: Uint8Array;
-  sig: Uint8Array;
-  ph: Uint8Array;
+  parentHash: Uint8Array;
   unmerged: number[];
 };
 
@@ -116,9 +115,8 @@ export function resolution(t: TNode[], x: number): number[] {
     return [...resolution(t, left(x)), ...resolution(t, right(x))];
   }
   const out = [x];
-  if (node.k === 1) {
-    const v = node.v;
-    for (const l of v.unmerged) out.push(2 * l);
+  if (node.k === 2) {
+    for (const l of node.v.unmerged) out.push(2 * l);
   }
   return out;
 }
@@ -178,26 +176,6 @@ export function hash(v: Uint8Array): Uint8Array {
   return sha256(v);
 }
 
-export function parentHashInput(pub: Uint8Array, leftH: Uint8Array, rightH: Uint8Array): Uint8Array {
-  return hash(new Writer().vec(pub).vec(leftH).vec(rightH).out());
-}
-
-export function parentHashOf(tr: Tree, x: number): Uint8Array {
-  if (level(x) === 0) {
-    const node = tr.t[x];
-    if (node.k !== 1) return new Uint8Array(0);
-    return node.v.ph ?? new Uint8Array(0);
-  }
-  const n = tr.n;
-  const r = root(n);
-  if (x === r) {
-    const node = tr.t[x];
-    if (node.k === BLANK) return new Uint8Array(0);
-    return (node.v as Par).ph;
-  }
-  const lh = parentHashOf(tr, left(x));
-  const rh = parentHashOf(tr, right(x));
-  const node = tr.t[x];
-  const pub = node.k === PARENT ? (node.v as Par).enc : new Uint8Array(0);
-  return parentHashInput(pub, lh, rh);
+export function parentHashInput(pub: Uint8Array, ph: Uint8Array, siblingHash: Uint8Array): Uint8Array {
+  return hash(new Writer().vec(pub).vec(ph).vec(siblingHash).out());
 }

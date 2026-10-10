@@ -22,17 +22,21 @@ export async function PUT(req: Request, ctx: { params: Promise<{ g: string }> })
   if (!row) return Response.json({ error: "no link" }, { status: 404 });
   const mm: string[] = Array.isArray(row[C.grps.mm]) ? row[C.grps.mm].map((x: unknown) => String(x)) : [];
   if (mm.indexOf(me.who) >= 0) return Response.json({ ok: true, mm });
-  if (mm.length >= ROOM_CAP) return Response.json({ error: "full", cap: ROOM_CAP }, { status: 409 });
-  const filter: Record<string, unknown> = { [C.grps.g]: g, [C.grps.mm]: { $ne: me.who } };
+  const filter: Record<string, unknown> = {
+    [C.grps.g]: g,
+    [C.grps.mm]: { $ne: me.who },
+    $expr: { $lt: [{ $size: { $ifNull: [`$${C.grps.mm}`, []] } }, ROOM_CAP] },
+  };
   const update: Record<string, unknown> = {};
   update["$push"] = { [C.grps.mm]: me.who };
   update["$inc"] = { [C.grps.ep]: 1 };
   const res = await db.collection("grps").findOneAndUpdate(filter, update, { returnDocument: "after" });
-  const now: string[] = res && Array.isArray(res[C.grps.mm]) ? res[C.grps.mm].map((x: unknown) => String(x)) : mm.concat([me.who]);
+  if (!res) return Response.json({ error: "full", cap: ROOM_CAP }, { status: 409 });
+  const now: string[] = Array.isArray(res[C.grps.mm]) ? res[C.grps.mm].map((x: unknown) => String(x)) : [];
   tell(now, me.who, { type: "wake", link: g });
   return Response.json({
     ok: true,
     mm: now,
-    ep: res && res[C.grps.ep] !== undefined ? Number(res[C.grps.ep]) : Number(row[C.grps.ep] || 0) + 1
+    ep: res[C.grps.ep] !== undefined ? Number(res[C.grps.ep]) : Number(row[C.grps.ep] || 0) + 1
   });
 }

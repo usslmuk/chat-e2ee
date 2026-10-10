@@ -22,19 +22,44 @@ export async function POST(req: Request) {
   if (mm.indexOf(me.who) < 0) return Response.json({ error: "bad blob" }, { status: 404 });
 
   const size = Buffer.byteLength(String(b.data), "utf8");
-  const res = await db
-    .collection("grps")
-    .updateOne(
-      { [C.grps.g]: g, $or: [{ [C.grps.by]: { $exists: false } }, { [C.grps.by]: { $lte: MAX_ROOM_BYTES - size } }] },
-      { $inc: { [C.grps.by]: size } }
-    );
-  if (res.modifiedCount === 0) return Response.json({ error: "room storage full" }, { status: 413 });
+  const used = await roomBytes(db, g);
+  if (used + size > MAX_ROOM_BYTES) return Response.json({ error: "room storage full" }, { status: 413 });
 
-  await db.collection("blobs").insertOne({
-    [C.blobs.id]: String(b.id),
-    [C.blobs.data]: String(b.data),
-    [C.blobs.g]: g,
-    [C.blobs.exp]: new Date(Date.now() + env.blobTtlH * 3600 * 1000)
-  });
+  try {
+    await db.collection("blobs").insertOne({
+      [C.blobs.id]: String(b.id),
+      [C.blobs.data]: String(b.data),
+      [C.blobs.g]: g,
+      [C.blobs.sz]: size,
+      [C.blobs.exp]: new Date(Date.now() + env.blobTtlH * 3600 * 1000)
+    });
+  } catch (err) {
+    return Response.json({ error: "bad blob" }, { status: 409 });
+  }
+  await db.collection("grps").updateOne({ [C.grps.g]: g }, { $set: { [C.grps.by]: used + size } });
   return Response.json({ ok: true });
+}
+
+async function roomBytes(db: any, g: string): Promise<number> {
+  const rows = await db
+    .collection("blobs")
+    .aggregate([
+      { $match: { [C.blobs.g]: g } },
+      {
+        $group: {
+          _id: null,
+          n: {
+            $sum: {
+              $cond: [
+                { $gt: [{ $ifNull: [`$${C.blobs.sz}`, 0] }, 0] },
+                `$${C.blobs.sz}`,
+                { $strLenBytes: `$${C.blobs.data}` },
+              ],
+            },
+          },
+        },
+      },
+    ])
+    .toArray();
+  return rows.length ? Number(rows[0].n) : 0;
 }

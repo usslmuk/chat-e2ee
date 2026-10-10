@@ -6,6 +6,7 @@ import C from "../../../../../fields.json";
 
 const PAGE = 300;
 const PER_ROOM = 60;
+const MAX_CT = 200000;
 
 export async function POST(req: Request) {
   const slow = throttled(req);
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
   const me = await authed(req);
   if (!me) return deny();
   const b = await req.json();
-  if (!need(b.id, 64) || !need(b.g, 64) || !need(b.ct, 1400000) || !need(b.sg, 256)) {
+  if (!need(b.id, 64) || !need(b.g, 64) || !need(b.ct, MAX_CT) || !need(b.sg, 256)) {
     return Response.json({ error: "bad msg" }, { status: 400 });
   }
   const g = String(b.g);
@@ -86,12 +87,17 @@ export async function GET(req: Request) {
     return true;
   });
 
-  const cursorOut = more ? String(page[PAGE - 1]._id) : null;
+  const keptDescending = kept;
+  const lastKept = keptDescending.length ? keptDescending[keptDescending.length - 1]._id : null;
+  const cursorOut = more && lastKept ? String(lastKept) : null;
+  const trimmed = capped.size > 0;
   return Response.json({
     more,
     cursor: cursorOut,
     full: capped.size === 0,
-    msgs: kept
+    trimmed,
+    trimmedRooms: [...capped].slice(0, 50),
+    msgs: keptDescending
       .slice()
       .reverse()
       .map((r: { [key: string]: unknown }) => ({

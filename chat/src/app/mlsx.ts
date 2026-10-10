@@ -12,7 +12,7 @@ import { b64d, b64e } from "./lib/crypto";
 
 const enc = new TextEncoder();
 
-export type NodeSave = { k: number; enc?: string; sig?: string; cred?: string; ph?: string; tbs?: string; lf?: string };
+export type NodeSave = { k: number; enc?: string; sig?: string; cred?: string; ph?: string; tbs?: string; lf?: string; um?: number[] };
 
 export type Saved = {
   gid: string;
@@ -34,6 +34,7 @@ export type Saved = {
   secrets: Record<string, string>;
   nodes: NodeSave[];
   seed: string;
+  rotatedAt?: number;
   hsSecret: string;
   appSecret: string;
   hsGen: number;
@@ -84,7 +85,7 @@ export function packNodes(g: G.Group): NodeSave[] {
       out.push({ k: 1, enc: b64e(v.enc), sig: b64e(v.sigKey), cred: b64e(v.cred), ph: v.ph ? b64e(v.ph) : "", tbs: b64e(v.tbs), lf: b64e(v.signature) });
     } else if (n.k === 2) {
       const v = n.v as T.Par;
-      out.push({ k: 2, enc: b64e(v.enc), sig: b64e(v.sig), ph: b64e(v.ph) });
+      out.push({ k: 2, enc: b64e(v.enc), ph: b64e(v.parentHash), um: v.unmerged });
     } else out.push({ k: 0 });
   }
   return out;
@@ -124,7 +125,7 @@ export function load(s: Saved): G.Group {
   const signer: G.Self = { sigPriv: b64d(s.signPriv), sigPub: b64d(s.signPub) };
   const t: T.TNode[] = s.nodes.map((n) => {
     if (n.k === 1) return { k: 1, v: { enc: b64d(n.enc!), sigKey: b64d(n.sig!), cred: b64d(n.cred!), ph: n.ph ? b64d(n.ph) : null, unmerged: [], tbs: b64d(n.tbs ?? ""), signature: b64d(n.lf ?? "") } };
-    if (n.k === 2) return { k: 2, v: { enc: b64d(n.enc!), sig: b64d(n.sig!), ph: b64d(n.ph!), unmerged: [] } };
+    if (n.k === 2) return { k: 2, v: { enc: b64d(n.enc!), parentHash: b64d(n.ph!), unmerged: n.um ?? [] } };
     return { k: 0 };
   });
   const initPriv = b64d(s.initPriv);
@@ -153,6 +154,7 @@ export function load(s: Saved): G.Group {
     },
     prevConfirmed: b64d(s.prevConfirmed),
     confirmed: b64d(s.confirmed),
+    rotatedAt: s.rotatedAt || 0,
     interim: b64d(s.interim),
     confirmation: b64d(s.confirmation),
     leafSecret: s.leafSecret ? b64d(s.leafSecret) : null,
@@ -214,6 +216,15 @@ export function addMembers(g: G.Group, pkgs: Uint8Array[]): G.CommitOut {
 
 export function dropMembers(g: G.Group, leaves: number[]): G.CommitOut {
   return G.commit(g, [], leaves);
+}
+
+export function rotateIdentity(g: G.Group): G.CommitOut {
+  return G.commit(g, [], [], { updates: [g.me], rotateSelf: true });
+}
+
+export function rotationDue(g: G.Group, everyDays: number): boolean {
+  if (!g.rotatedAt) return false;
+  return Date.now() - g.rotatedAt >= everyDays * 86400000;
 }
 
 export function applyCommit(g: G.Group, out: G.CommitOut): G.Group {
@@ -295,8 +306,27 @@ export function sealApp(g: G.Group, plaintext: Uint8Array): { ct: string; gen: n
   return { ct: b64e(v), gen: out.generation };
 }
 
+const seedCache = new WeakMap<G.Group, Map<number, Uint8Array>>();
+
 export function senderSeed(g: G.Group, leaf: number): Uint8Array {
-  return X.leafSecret(X.rootSecret(g.secrets.encryption), leaf, g.n);
+  let per = seedCache.get(g);
+  if (!per) {
+    per = new Map();
+    seedCache.set(g, per);
+  }
+  let hit = per.get(leaf);
+  if (!hit) {
+    hit = X.leafSecret(X.rootSecret(g.secrets.encryption), leaf, g.n);
+    per.set(leaf, hit);
+  }
+  return Uint8Array.from(hit);
+}
+
+export function forgetSeeds(g: G.Group): void {
+  const per = seedCache.get(g);
+  if (!per) return;
+  for (const v of per.values()) v.fill(0);
+  seedCache.delete(g);
 }
 
 export function openApp(g: G.Group, blob: Uint8Array): { body: Uint8Array; leaf: number; generation: number } | null {

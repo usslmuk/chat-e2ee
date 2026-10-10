@@ -1,6 +1,8 @@
 const dev = process.env.NODE_ENV !== "production";
+const { version } = await import("./package.json", { with: { type: "json" } }).then((m) => m.default);
 
 const nextConfig = {
+  env: { APP_VERSION: version },
   images: { unoptimized: true },
   poweredByHeader: false,
   reactStrictMode: true,

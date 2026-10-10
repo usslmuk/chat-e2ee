@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { hmac } from "@noble/hashes/hmac.js";
-import { NH, NK, NN } from "./hpke.ts";
+import { NH, NK, NN, makeHpke, type Hpke } from "./hpke.ts";
+import { suiteOf, type CHash, type Suite } from "./suite.ts";
 
 function cat(...p: Uint8Array[]): Uint8Array {
   let n = 0;
@@ -14,7 +15,7 @@ function cat(...p: Uint8Array[]): Uint8Array {
   return v;
 }
 
-function extract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
+export function extract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
   const s = salt.length === 0 ? new Uint8Array(NH) : salt;
   return hmac(sha256, s, ikm);
 }
@@ -40,7 +41,7 @@ function vlen(v: Uint8Array): Uint8Array {
   throw new Error("vector too long");
 }
 
-export function expandWithLabel(secret: Uint8Array, label: string, ctx: Uint8Array, len: number): Uint8Array {
+export function expandWithLabel(secret: Uint8Array, label: string, ctx: Uint8Array, len: number, sid = 1): Uint8Array {
   const full = new TextEncoder().encode("MLS 1.0 " + label);
   const info = cat(
     new Uint8Array([(len >> 8) & 255, len & 255]),
@@ -52,13 +53,13 @@ export function expandWithLabel(secret: Uint8Array, label: string, ctx: Uint8Arr
   return expand(secret, info, len);
 }
 
-export function deriveSecret(secret: Uint8Array, label: string): Uint8Array {
-  return expandWithLabel(secret, label, new Uint8Array(0), NH);
+export function deriveSecret(secret: Uint8Array, label: string, sid = 1): Uint8Array {
+  return expandWithLabel(secret, label, new Uint8Array(0), suiteOf(sid).nh, sid);
 }
 
-export function deriveTreeSecret(secret: Uint8Array, label: string, gen: number, len: number): Uint8Array {
+export function deriveTreeSecret(secret: Uint8Array, label: string, gen: number, len: number, sid = 1): Uint8Array {
   const g = new Uint8Array([(gen >>> 24) & 255, (gen >> 16) & 255, (gen >> 8) & 255, gen & 255]);
-  return expandWithLabel(secret, label, g, len);
+  return expandWithLabel(secret, label, g, len, sid);
 }
 
 export function nil(): Uint8Array {
@@ -104,7 +105,7 @@ export function joinerOf(initPrev: Uint8Array, commitSecret: Uint8Array, ctx: Ui
 }
 
 export function joinerFromJoiner(joiner: Uint8Array, psk: Uint8Array): Uint8Array {
-  return extract(joiner, psk.length === 0 ? new Uint8Array(0) : psk);
+  return extract(joiner, psk.length === 0 ? new Uint8Array(NH) : psk);
 }
 
 export function epochFrom(initPrev: Uint8Array, commitSecret: Uint8Array, psk: Uint8Array, ctx: Uint8Array): EpochSecrets {
@@ -121,13 +122,13 @@ export function pskLabel(id: Uint8Array, index: number, count: number): Uint8Arr
 export function makePskSecret(psks: Uint8Array[], labels: Uint8Array[]): Uint8Array {
   if (psks.length === 0) return new Uint8Array(0);
   if (psks.length !== labels.length) throw new Error("psk count mismatch");
-  const inputs: Uint8Array[] = [];
+  let secret: Uint8Array = new Uint8Array(NH);
   for (let i = 0; i < psks.length; i++) {
-    inputs.push(cat(extract(nil(), psks[i]), pskLabel(labels[i], i, psks.length)));
+    const extracted = extract(nil(), psks[i]);
+    const input = expandWithLabel(extracted, "derived psk", pskLabel(labels[i], i, psks.length), NH);
+    secret = extract(input, secret);
   }
-  let secret = extract(inputs[0], inputs.length > 1 ? inputs[1] : new Uint8Array(0));
-  for (let i = 2; i < inputs.length; i++) secret = extract(secret, inputs[i]);
-  return deriveSecret(secret, "derived psk");
+  return secret;
 }
 
 export function exportSecret(exporterSecret: Uint8Array, label: string, ctx: Uint8Array, length: number): Uint8Array {

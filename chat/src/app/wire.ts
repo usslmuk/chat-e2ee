@@ -3,35 +3,39 @@ import * as G from "./mls/commit";
 
 import * as P2P from "./p2p";
 import { b64d, b64e } from "./lib/crypto";
+import * as vault from "./lib/vault";
 
 export type Group = X.Saved & { signer: string; initPub: string; ref: string; pkg: string };
 type SelfSave = { priv: string; pub: string };
 
-const KEY = "hW4rTb9nQ2xVmK7pLd3sYc8JfRg5uAe1iOz0N6wMq";
-const SELF = "vB3xNp7kLq2rTm9wYc4hJd8Fs1uGz5aEe0iOzXnQ";
-const STAMP = "pL6nZc3wVb9mTq2Xk7Rd4hJs1uGp5aEe0iOzYnQbMwTvC";
-const OFFER = "kR9tWq2LmXb7nVz4cYh8Jd3Fs1uGp5aEe0iOzXnQbMwTvCy";
-const BUILD = "11";
+const KEY = "groups";
+const SELF = "self";
+const OFFER = "offer";
+const STAMP = "build";
+
+export function version(): string {
+  return process.env.APP_VERSION || "0.0.0";
+}
+
+export async function ready(): Promise<void> {
+  await vault.ready();
+  stamp();
+}
 
 export function stamp(): void {
-  if (localStorage.getItem(STAMP) === BUILD) return;
-  for (const k of [KEY, SELF, OFFER]) localStorage.removeItem(k);
-  localStorage.setItem(STAMP, BUILD);
+  if (vault.get<string>(STAMP) === version()) return;
+  vault.del(KEY);
+  vault.del(SELF);
+  vault.del(OFFER);
+  vault.set(STAMP, version());
 }
 
 function read<T>(k: string): T | null {
-  try {
-    const raw = localStorage.getItem(k);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch (e) {
-    return null;
-  }
+  return vault.get<T>(k);
 }
 
 function write(k: string, v: unknown): void {
-  try {
-    localStorage.setItem(k, JSON.stringify(v)); 
-  } catch (e) {}
+  vault.set(k, v);
 }
 
 export function selfKey(): { priv: string; pub: string } | null {
@@ -129,6 +133,11 @@ export function applyCommits(room: string, list: CommitWire[]): number {
     saveGroup(room, g);
   }
   return done;
+}
+
+export function rotationDue(room: string, everyDays: number): boolean {
+  const g = load(room);
+  return g ? X.rotationDue(g, everyDays) : false;
 }
 
 export function saveGroup(room: string, g: G.Group): void {

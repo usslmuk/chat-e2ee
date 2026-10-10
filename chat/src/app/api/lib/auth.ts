@@ -28,17 +28,18 @@ export function need(v: unknown, max: number) {
 
 const BURST = 40;
 const REFILL_MS = 10000;
+const MAX_BUCKETS = 20000;
 const bursts = new Map<string, { tokens: number; last: number }>();
 
 export function guard(who: string) {
   const now = Date.now();
   let b = bursts.get(who);
   if (!b) {
-    if (bursts.size > 20000) {
+    if (bursts.size >= MAX_BUCKETS) {
       const stale = now - REFILL_MS * 2;
       for (const [k, v] of bursts) if (v.last < stale) bursts.delete(k);
-      if (bursts.size > 20000) bursts.clear();
     }
+    if (bursts.size >= MAX_BUCKETS) return Response.json({ error: "slow down" }, { status: 429 });
     bursts.set(who, { tokens: BURST, last: now });
     return null;
   }
@@ -62,7 +63,11 @@ export async function authed(req: Request) {
   if (!hit) return null;
   if (hit[C.tok.exp] && new Date(hit[C.tok.exp]).getTime() < Date.now()) return null;
   const who = String(hit[C.tok.who]);
-  if (whoByTok.size > 20000) whoByTok.clear();
+  if (whoByTok.size >= MAX_BUCKETS) {
+    const stale = Date.now() - REFILL_MS * 2;
+    for (const [k, v] of bursts) if (v.last < stale) whoByTok.delete(k);
+  }
+  if (whoByTok.size >= MAX_BUCKETS) return null;
   whoByTok.set(hh, who);
   return { who };
 }

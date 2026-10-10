@@ -3,9 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { Check, Copy, Download, FileText, Plus, Smile, Trash2, X as CloseIcon } from "lucide-react";
 import { bundle, delLink, delMsg, dropReact, dropWelcome, freshInvite, getBlob, getLink, getMsgs, getReacts, getWelcome, ice, ids, joinLink, newLink, online, postBlob, postMsg, postReact, publish, pullCommits, pushCommit, putGroupInfo, putWelcome, resolveInvite, signal, stream } from "./lib/net";
-import { unpack } from "./lib/blob";
+
 import { stamp } from "./lib/time";
-import { b64d, b64e, ctId, edSign, edVerify, genKeys, safety } from "./lib/crypto";
+import { b64d, b64e, ctId, delCommitment, genKeys, safety } from "./lib/crypto";
+import * as V from "./lib/vault";
 import * as W from "./wire";
 import * as X from "./mlsx";
 import * as P2P from "./p2p";
@@ -49,24 +50,39 @@ function rid(n: number) {
   return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-const blobUrls = new Map<string, string>();
+const blobUrls = new Map<string, Held>();
 const CACHE_MAX = 60;
 
-function keepBlob(id: string, url: string) {
-  blobUrls.set(id, url);
+type Held = { url: string; type: string };
+
+const ROTATE_DAYS = 30;
+
+function sniff(bytes: Uint8Array): string {
+  const at = (i: number) => (i < bytes.length ? bytes[i] : 0);
+  const starts = (o: number, a: number[]) => a.every((v, i) => at(o + i) === v);
+  if (starts(0, [0x89, 0x50, 0x4e, 0x47])) return "image/png";
+  if (starts(0, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (starts(0, [0x47, 0x49, 0x46, 0x38])) return "image/gif";
+  if (starts(0, [0x42, 0x4d])) return "image/bmp";
+  if (starts(0, [0x52, 0x49, 0x46, 0x46]) && starts(8, [0x57, 0x45, 0x42, 0x50])) return "image/webp";
+  return "application/octet-stream";
+}
+
+function keepBlob(id: string, held: Held) {
+  blobUrls.set(id, held);
   while (blobUrls.size > CACHE_MAX) {
     const oldest = blobUrls.keys().next().value;
     if (oldest === undefined || oldest === id) break;
     const gone = blobUrls.get(oldest);
     blobUrls.delete(oldest);
-    if (gone) URL.revokeObjectURL(gone);
+    if (gone) URL.revokeObjectURL(gone.url);
   }
 }
 
 function dropBlob(id: string) {
   const u = blobUrls.get(id);
   if (u) {
-    URL.revokeObjectURL(u);
+    URL.revokeObjectURL(u.url);
     blobUrls.delete(id);
   }
 }
@@ -78,22 +94,23 @@ function dropRoom(g: string, msgs: Msg[]) {
 }
 
 function FileView({ id, conv, token, name, mime, size, big, out, onBig, onShut }: { id: string; conv: string; token: string; name: string; mime: string; size: number; big: boolean; out: boolean; onBig: () => void; onShut: () => void }) {
-  const [url, setUrl] = useState("");
+  const [held, setHeld] = useState<Held | null>(null);
   const [ok, setOk] = useState(false);
-  const isImg = mime.startsWith("image/");
+  const url = held ? held.url : "";
+  const isImg = held ? held.type.startsWith("image/") : false;
   useEffect(() => {
     const hit = blobUrls.get(id);
     if (hit) {
-      setUrl(hit);
+      setHeld(hit);
       return;
     }
     let dead = false;
     getBlob(token, id).then((b) => {
       const opened = W.open(conv, String(b.data));
       if (!opened) return;
-      const fresh = URL.createObjectURL(new Blob([opened.raw as BlobPart], { type: mime }));
+      const fresh: Held = { url: URL.createObjectURL(new Blob([opened.raw as BlobPart], { type: sniff(opened.raw) })), type: sniff(opened.raw) };
       keepBlob(id, fresh);
-      if (!dead) setUrl(fresh);
+      if (!dead) setHeld(fresh);
     }).catch(() => {});
     return () => {
       dead = true;
@@ -108,10 +125,11 @@ function FileView({ id, conv, token, name, mime, size, big, out, onBig, onShut }
     return () => window.removeEventListener("keydown", h);
   }, [big]);
   async function copy() {
+    if (!held || !held.type.startsWith("image/")) return;
     try {
       const r = await fetch(url);
       const b = await r.blob();
-      await navigator.clipboard.write([new ClipboardItem({ [mime]: b })]);
+      await navigator.clipboard.write([new ClipboardItem({ [held.type]: b })]);
       setOk(true);
       window.setTimeout(() => setOk(false), 1200);
     } catch (e) {}
@@ -321,7 +339,7 @@ export default function Shell() {
         chans: [],
         msgs: []
       };
-      W.stamp();
+      await W.ready();
       W.setSelfKey();
       setSess(s);
       announce(s);
@@ -647,7 +665,10 @@ async function refreshPresence(s: Sess) {
       if (moved) {
         await putGroupInfo(s.token, g, W.groupInfoOf(g));
         const pub = W.publishCommit(g);
-        if (pub) await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
+        if (pub) {
+          await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
+          if (W.rotationDue(g, ROTATE_DAYS)) announce(s);
+        }
       }
       await catchUp(s, g);
       return;
@@ -797,8 +818,6 @@ async function refreshPresence(s: Sess) {
           if (!opened) continue;
           const o = JSON.parse(opened.text);
           const who = String(o.w || opened.who);
-          const b = await peerOf(s, who);
-          if (!edVerify(b.ed, enc.encode(g + "|r|" + id + "|" + who), b64d(String(x.sg)))) continue;
           out.push({ id, mid: String(o.m), who, emo: String(o.e), mine: who === s.who });
         } catch (e) {}
       }
@@ -818,15 +837,32 @@ async function refreshPresence(s: Sess) {
         setMarks((prev) => prev.filter((x) => x.id !== hit.id));
       } else {
         const id = rid(16);
-        const aad = enc.encode(ch.sid + "|r|" + id);
         const ct = W.seal(ch.sid, enc.encode(JSON.stringify({ m: mid, w: s.who, e: emo })));
         if (!ct) throw new Error("waiting for peer");
-        const sg = b64e(edSign(b64d(s.keys.edPriv), enc.encode(ch.sid + "|r|" + id + "|" + s.who)));
-        await postReact(s.token, { id, g: ch.sid, ct, sg });
+        await postReact(s.token, { id, g: ch.sid, ct, sg: "" });
         setMarks((prev) => [...prev, { id, mid, who: s.who, emo, mine: true }]);
       }
     } catch (e) {
       setErr(dberr(e) ? "database unreachable" : "react failed");
+    }
+  }
+
+  async function rotate(g: string) {
+    const s = ref.current.sess;
+    if (!s) return;
+    setErr("");
+    try {
+      const cur = W.load(g);
+      if (!cur) throw new Error("no such room");
+      const out = X.rotateIdentity(cur);
+      W.saveGroup(g, out.group);
+      W.forgetRatchets(g);
+      const pub = W.publishCommit(g);
+      if (pub) await pushCommit(s.token, g, pub.ep, pub.ct, pub.sg, pub.js, pub.sh).catch(() => {});
+      announce(s);
+      setSess({ ...s });
+    } catch (e) {
+      setErr(dberr(e) ? "database unreachable" : "rotate failed");
     }
   }
 
@@ -1022,10 +1058,10 @@ async function refreshPresence(s: Sess) {
     const ct = W.seal(ch.sid, enc.encode(JSON.stringify({ w: o.w, t: o.t, d: o.d, a: o.a ? { id: o.a.id, n: o.a.name, m: o.a.mime, s: o.a.size } : null })));
     if (!ct) throw new Error("waiting for peer");
     const id = ctId(ct);
-    const aad = enc.encode(ch.sid + "|" + id);
-    const sg = b64e(edSign(b64d(s.keys.edPriv), enc.encode(ch.sid + "|" + id + "|" + o.w + "m")));
+    const tok = crypto.getRandomValues(new Uint8Array(32));
     relay(ch.sid, b64d(ct));
-    await postMsg(s.token, { id, g: ch.sid, ct, sg, bo: 0, exp: null });
+    await postMsg(s.token, { id, g: ch.sid, ct, sg: delCommitment(tok), bo: 0, exp: null });
+    V.set("del." + id, b64e(tok));
     return id;
   }
 
@@ -1043,7 +1079,7 @@ async function refreshPresence(s: Sess) {
         const blobId = rid(16);
         const eb = W.seal(ch.sid, buf) || "";
         await postBlob(s.token, { id: blobId, data: eb, g: ch.sid });
-        keepBlob(blobId, URL.createObjectURL(new Blob([buf as BlobPart], { type: f.type || "bin" })));
+        keepBlob(blobId, { url: URL.createObjectURL(new Blob([buf as BlobPart], { type: sniff(buf) })), type: sniff(buf) });
         const at = Date.now();
         const id = await post(s, ch, {
           w: s.who,
@@ -1150,8 +1186,10 @@ async function refreshPresence(s: Sess) {
     if (!s) return;
     setErr("");
     try {
-      const sig = b64e(edSign(b64d(s.keys.edPriv), enc.encode(g + "|" + id + "|" + s.who + "m")));
-      await delMsg(s.token, id, g, sig);
+      const stored = V.get<string>("del." + id);
+      if (!stored) throw new Error("no delete key for that message");
+      await delMsg(s.token, id, g, stored);
+      V.del("del." + id);
       const hit = s.msgs.find((m) => m.id === id);
       if (hit && hit.att) dropBlob(hit.att.id);
       s.msgs = s.msgs.filter((m) => m.id !== id);

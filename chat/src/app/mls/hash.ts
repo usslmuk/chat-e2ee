@@ -21,12 +21,14 @@ export function parentNodeInput(node: TNode, leftH: Uint8Array, rightH: Uint8Arr
     return new Writer().u8(2).none(false).vec(leftH).vec(rightH).out();
   }
   const v = node.v;
+  const unmerged = new Writer();
+  for (const l of v.unmerged) unmerged.u32(l);
   return new Writer()
     .u8(2)
     .none(true)
     .vec(v.enc)
-    .vec(v.sig)
-    .vec(v.ph)
+    .vec(v.parentHash)
+    .vec(unmerged.out())
     .vec(leftH)
     .vec(rightH)
     .out();

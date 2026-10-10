@@ -3,12 +3,14 @@ import { env } from "./db";
 type Bucket = { tokens: number; last: number };
 
 const buckets = new Map<string, Bucket>();
+const MAX_BUCKETS = 20000;
 
 export function limited(ip: string) {
   const now = Date.now();
   let b = buckets.get(ip);
   if (!b) {
-    if (buckets.size > 20000) evict(now);
+    if (buckets.size >= MAX_BUCKETS) evict(now);
+    if (buckets.size >= MAX_BUCKETS) return true;
     buckets.set(ip, { tokens: env.maxRate, last: now });
     return false;
   }
@@ -25,13 +27,15 @@ function evict(now: number) {
   for (const [k, v] of buckets) {
     if (v.last < stale) buckets.delete(k);
   }
-  if (buckets.size > 20000) buckets.clear();
 }
 
 export function ipOf(req: Request) {
-  const h = req.headers.get("x-forwarded-for") || "";
-  if (h.length === 0) return "local";
-  return h.split(",")[0].trim();
+  const direct = req.headers.get("x-real-ip");
+  if (direct) return direct.trim();
+  const fwd = req.headers.get("x-forwarded-for") || "";
+  if (!fwd) return "local";
+  const parts = fwd.split(",").map((x) => x.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "local";
 }
 
 export function rateKey(req: Request, who: string) {

@@ -32,6 +32,10 @@ function sample(ct: Uint8Array): Uint8Array {
   return ct.length <= 32 ? ct : ct.slice(0, 32);
 }
 
+export function openAead(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ct: Uint8Array): Uint8Array {
+  return gcm(key, nonce, aad).decrypt(ct);
+}
+
 export function senderDataKeys(senderDataSecret: Uint8Array, ct: Uint8Array): { key: Uint8Array; nonce: Uint8Array } {
   const s = sample(ct);
   return {

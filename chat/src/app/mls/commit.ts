@@ -38,6 +38,7 @@ export type Group = {
   extensions: Uint8Array;
   seed: Uint8Array;
   fromCommit: X.Held[];
+  rotatedAt: number;
 };
 
 export function eq(a: Uint8Array, b: Uint8Array): boolean {
@@ -63,7 +64,22 @@ export function makeKeyPackage(self: Self): { pkg: Uint8Array; init: K.Key; leaf
   return { pkg, init, leaf };
 }
 
+const pkgCache = new Map<string, F.Leaf>();
+
 export function leafFromPackage(pkg: Uint8Array): F.Leaf {
+  const key = Buffer.from(F.keyPackageRef(pkg)).toString("base64");
+  const hit = pkgCache.get(key);
+  if (hit) return hit;
+  const leaf = parsePackage(pkg);
+  pkgCache.set(key, leaf);
+  if (pkgCache.size > 64) {
+    const oldest = pkgCache.keys().next().value;
+    if (oldest !== undefined) pkgCache.delete(oldest);
+  }
+  return leaf;
+}
+
+function parsePackage(pkg: Uint8Array): F.Leaf {
   const b = new Buf(pkg);
   const body = b.vec();
   const sig = b.vec();
@@ -156,7 +172,7 @@ export function groupInfoOf(g: Group): GroupInfo {
     if (nd.k === 1) nodes.push(F.writeLeafNode(toLeafNode(nd.v as T.Leaf)));
     else if (nd.k === 2) {
       const p = nd.v as T.Par;
-      nodes.push(F.writeParentNode({ enc: p.enc, sig: p.sig, parentHash: p.ph }));
+      nodes.push(F.writeParentNode({ enc: p.enc, parentHash: p.parentHash, unmerged: p.unmerged }));
     } else nodes.push(EMPTY);
   }
   return {
@@ -230,8 +246,8 @@ export function applyGroupInfo(
       leafSlot++;
     } else {
       const p = F.readParentNode(nb);
-      t[i] = { k: 2, v: { enc: p.enc, sig: p.sig, ph: p.parentHash, unmerged: [] } };
-      parents.set(i, { enc: p.enc, sig: p.sig, ph: p.parentHash, unmerged: [] });
+      t[i] = { k: 2, v: { enc: p.enc, parentHash: p.parentHash, unmerged: p.unmerged } };
+      parents.set(i, { enc: p.enc, parentHash: p.parentHash, unmerged: p.unmerged });
     }
   }
   const me = leafIndexOf(t, self.sigPub);
@@ -259,6 +275,7 @@ export function applyGroupInfo(
     extensions: EMPTY,
   seed: new Uint8Array(32),
     fromCommit: [],
+    rotatedAt: 0,
   };
   refresh(g, secret, held);
   return g;
@@ -304,6 +321,7 @@ export function create(id: Uint8Array, self: Self, pkg: Uint8Array, init: K.Key)
     extensions: EMPTY,
   seed: new Uint8Array(32),
     fromCommit: [],
+    rotatedAt: 0,
   };
   refresh(g, null, []);
   return g;
@@ -378,6 +396,7 @@ export type WelcomeEntry = { ref: Uint8Array; enc: EncGroupSecrets; path: PathSh
 export type Welcome = { info: GroupInfo; entries: WelcomeEntry[] };
 
 export type CommitOpts = {
+  rotateSelf?: boolean;
   psks?: { secret: Uint8Array; id: Uint8Array; nonce?: Uint8Array }[];
   updates?: number[];
   extensions?: Uint8Array[];
@@ -428,23 +447,27 @@ export function applyRemote(g: Group, wire: Remote): Group {
 
   const signCtx = P.groupContextExt(g.id, g.epoch, F.SUITE, treeHash(g.t, g.n), g.confirmed, new Uint8Array(0));
   const tbs = F.contentTbsExt(F.WIRE_PUBLIC, wire.content, signCtx, new Uint8Array(0));
-  if (!ed25519.verify(wire.signature, tbs, cred)) throw new Error("commit signature did not verify");
+  if (!ed25519.verify(wire.signature, F.tbsLabel("FramedContentTBS", tbs), cred)) throw new Error("commit signature did not verify");
 
   const bb = new Buf(fr.body);
-  const hasPath = !bb.none();
-  const path = hasPath ? F.readPath(new Buf(bb.vec())) : null;
   const pb = new Buf(bb.vec());
   const proposals: F.Proposal[] = [];
-  while (!pb.done) proposals.push(F.readProposal(new Buf(pb.vec())));
+  while (!pb.done) proposals.push(F.readProposal(pb));
+  const path = !bb.none() ? F.readPath(bb) : null;
 
   const ext = g.extensions;
   const t = clone(g.t);
   let n = g.n;
   const fresh: F.Leaf[] = [];
   let removed = 0;
+  let updated = 0;
   for (const pr of proposals) {
     if (pr.t === F.ADD) fresh.push(leafFromPackage(pr.pkg));
-    else if (pr.t === F.REMOVE) {
+    else if (pr.t === F.UPDATE) {
+      if (fr.sender < 0 || fr.sender >= n) throw new Error("update out of range");
+      t[2 * fr.sender] = { k: 1, v: toTree(F.readLeafNodeBody(new Buf(pr.leaf))) };
+      updated++;
+    } else if (pr.t === F.REMOVE) {
       if (pr.leaf < 0 || pr.leaf >= n) throw new Error("remove out of range");
       t[2 * pr.leaf] = { k: 0 };
       removed++;
@@ -476,15 +499,16 @@ export function applyRemote(g: Group, wire: Remote): Group {
   const encs: Uint8Array[] = [];
   if (path) {
     const fdp = T.filteredDirectPath(t, fr.sender, n);
+    for (const node of T.directPath(2 * fr.sender, n)) t[node] = { k: 0 };
     for (let i = 0; i < fdp.length; i++) {
       const enc = path.nodes[i] ? path.nodes[i].enc : new Uint8Array(32);
       encs.push(enc);
-      t[fdp[i]] = { k: 2, v: { enc, sig: EMPTY, ph: new Uint8Array(32), unmerged: [] } };
+      t[fdp[i]] = { k: 2, v: { enc, parentHash: EMPTY, unmerged: [] } };
     }
-    const phs = parentHashChain(t, fdp, encs, n);
+    const chain = parentHashChain(t, fdp, encs, fr.sender);
     for (let i = 0; i < fdp.length; i++) {
       const nd = t[fdp[i]];
-      if (nd.k === 2) nd.v.ph = phs[i];
+      if (nd.k === 2) nd.v.parentHash = chain.stored[i];
     }
     t[2 * fr.sender] = { k: 1, v: toTree(path.leaf) };
   }
@@ -539,7 +563,7 @@ export function commit(g: Group, adds: Uint8Array[], removes: number[], opts: Co
   const body = F.writeCommit(p.path, p.proposals);
   const content = F.framed(g.id, g.epoch, g.me, EMPTY, F.COMMIT, body);
   const tbs = F.contentTbsExt(F.WIRE_PUBLIC, content, signCtx, EMPTY);
-  const signature = ed25519.sign(tbs, g.self.sigPriv);
+  const signature = ed25519.sign(F.tbsLabel("FramedContentTBS", tbs), g.self.sigPriv);
   const commitSecret = K.fresh();
   const pskSecret = pskSecretOf(psks);
   const secrets = S.epochFrom(g.secrets.init, commitSecret, pskSecret, provisionalCtx);
@@ -564,6 +588,8 @@ export function commit(g: Group, adds: Uint8Array[], removes: number[], opts: Co
     confirmation: tag,
     leafSecret: p.leafSecret,
     held: p.held,
+    self: p.rotatedSelf ?? g.self,
+    rotatedAt: p.rotatedSelf ? Date.now() : g.rotatedAt || 0
   };
   refresh(next, null, p.held);
 
@@ -694,12 +720,15 @@ export type Prepared = {
   priv: Map<number, Uint8Array>;
   fdp: number[];
   out: OutShare[];
+  rotatedSelf: Self | null;
 };
 
 export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: CommitOpts = {}): Prepared {
   const t = clone(g.t);
   const updatedPriv = new Map<number, Uint8Array>();
   const proposals: F.Proposal[] = [];
+  const rotatedSelf: Self | null = opts.rotateSelf ? makeSelf() : null;
+  const signer: Self = rotatedSelf ?? g.self;
   for (const l of removes) {
     if (l < 0 || l >= g.n) throw new Error("leaf out of range");
     t[2 * l] = { k: 0 };
@@ -711,9 +740,9 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
     if (old.k !== 1) throw new Error("update of a blank leaf");
     const fresh = K.keygen();
     updatedPriv.set(2 * l, fresh.priv);
-    const node = signLeaf(g.self, { enc: fresh.pub, sigKey: g.self.sigPub, cred: g.self.sigPub, source: F.SRC_UPDATE, parentHash: null, tbs: EMPTY, signature: EMPTY }, g.id, l);
+    const node = signLeaf(signer, { enc: fresh.pub, sigKey: signer.sigPub, cred: signer.sigPub, source: F.SRC_UPDATE, parentHash: null, tbs: EMPTY, signature: EMPTY }, g.id, l);
     t[2 * l] = { k: 1, v: toTree(node) };
-    proposals.push({ t: F.UPDATE, pkg: writeLeafNode(node) });
+    proposals.push({ t: F.UPDATE, leaf: F.writeLeafNodeBody(node) });
   }
   const pskIds = (opts.psks ?? []).map((p) => writePskId({ t: P.PSK_EXTERNAL, id: p.id, nonce: p.nonce ?? P.freshNonce() }));
   for (const id of pskIds) proposals.push({ t: F.PSK, psk: id });
@@ -741,20 +770,20 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
     const ps = chain[i + 1];
     const pair = K.derivePair(X.nodeSecret(ps));
     encs.push(pair.pub);
-    t[fdp[i]] = { k: 2, v: { enc: pair.pub, sig: EMPTY, ph: new Uint8Array(32), unmerged: [] } };
+    t[fdp[i]] = { k: 2, v: { enc: pair.pub, parentHash: EMPTY, unmerged: [] } };
     held.push({ node: fdp[i], pathSecret: ps });
     seals.push(new Uint8Array(0));
   }
-  const phs = parentHashChain(t, fdp, encs, n);
+  const phs = parentHashChain(t, fdp, encs, g.me);
   const leafPair = K.derivePair(X.nodeSecret(chain[0]));
   const leaf = signLeaf(
-    g.self,
-    { enc: leafPair.pub, sigKey: g.self.sigPub, cred: g.self.sigPub, source: F.SRC_COMMIT, parentHash: phs[0] ?? EMPTY, tbs: new Uint8Array(0), signature: EMPTY },
+    signer,
+    { enc: leafPair.pub, sigKey: signer.sigPub, cred: signer.sigPub, source: F.SRC_COMMIT, parentHash: phs.leaf, tbs: new Uint8Array(0), signature: EMPTY },
     g.id,
     g.me,
   );
   for (let i = 0; i < fdp.length; i++) {
-    t[fdp[i]] = { k: 2, v: { enc: encs[i], sig: EMPTY, ph: phs[i], unmerged: [] } };
+    t[fdp[i]] = { k: 2, v: { enc: encs[i], parentHash: phs.stored[i], unmerged: [] } };
   }
   t[2 * g.me] = { k: 1, v: toTree(leaf) };
   const provisional = P.groupContextExt(g.id, g.epoch + 1, F.SUITE, treeHash(t, n), g.confirmed, writeExtensions(opts.extensions ?? []));
@@ -766,6 +795,7 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
     for (const r of T.resolution(t, cp[i])) {
       const nd = t[r];
       if (nd.k === 0) continue;
+      if (holdsKey(t, n, g.me, r)) continue;
       const pk = nd.k === 1 ? (nd.v as T.Leaf).enc : (nd.v as T.Par).enc;
       const e = K.encap(pk);
       const c = K.keySchedule(e.shared, label);
@@ -783,17 +813,28 @@ export function prepare(g: Group, adds: Uint8Array[], removes: number[], opts: C
   }
   const nodes: F.PathNode[] = [];
   for (let i = 0; i < fdp.length; i++) nodes.push({ enc: encs[i], kemOutput: seals[i] });
-  return { path: { leaf, nodes }, proposals, t, n, ctx: provisional, leafSecret, held, priv: updatedPriv, fdp, out };
+  return { path: { leaf, nodes }, proposals, t, n, ctx: provisional, leafSecret, held, priv: updatedPriv, fdp, out, rotatedSelf };
 }
 
-function parentHashChain(t: T.TNode[], fdp: number[], encs: Uint8Array[], n: number): Uint8Array[] {
-  const out: Uint8Array[] = new Array(fdp.length);
+function holdsKey(t: T.TNode[], n: number, leaf: number, node: number): boolean {
+  if (node === 2 * leaf) return true;
+  return T.directPath(2 * leaf, n).indexOf(node) >= 0;
+}
+
+function parentHashChain(
+  t: T.TNode[],
+  fdp: number[],
+  encs: Uint8Array[],
+  sender: number,
+): { stored: Uint8Array[]; leaf: Uint8Array } {
+  const stored: Uint8Array[] = new Array(fdp.length);
+  let above: Uint8Array = EMPTY;
   for (let i = fdp.length - 1; i >= 0; i--) {
-    const node = fdp[i];
-    const above = i === fdp.length - 1 ? EMPTY : out[i + 1];
-    const sibHash = node === T.root(n) ? EMPTY : subtreeHash(t, T.sibling(node, n));
-    out[i] = F.parentHashOf(encs[i], above, sibHash);
+    stored[i] = above;
+    const down = i === 0 ? 2 * sender : fdp[i - 1];
+    const sib = down < fdp[i] ? T.right(fdp[i]) : T.left(fdp[i]);
+    above = F.parentHashOf(encs[i], above, subtreeHash(t, sib));
   }
-  return out;
+  return { stored, leaf: above };
 }
 
